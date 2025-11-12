@@ -14,7 +14,7 @@ const OPENAI_KEY   = "sk-proj-yqG5epFpVSgsvtHuA3Mty4jcTJl0UkDrOyI61gm-DuZQ2k1mAs
 // ✅ GET للتحقق من الويبهوك (Meta يطلبها مرة واحدة)
 // ✅ تحقق الويبهوك – استعمل نفس التوكن اللي في ميتا بالضبط
 // GET webhook verification - REQUIRED BY META
-app.get("/webhook", (req, res) => {
+app.post("/webhook", (req, res) => {
   const VERIFY_TOKEN = "mawaheb_verify"; // نفس التوكن اللي حطيته في Meta
 
   const mode = req.query["hub.mode"];
