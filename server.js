@@ -12,18 +12,27 @@ const PHONE_ID     = process.env.PHONE_ID;
 const OPENAI_KEY   = process.env.OPENAI_API_KEY;
 
 // ✅ GET للتحقق من الويبهوك (Meta يطلبها مرة واحدة)
+// ✅ تحقق الويبهوك – استعمل نفس التوكن اللي في ميتا بالضبط
 app.get("/webhook", (req, res) => {
+  const VERIFY_TOKEN = "mawaheb_verify"; // نفس اللي كتبته في ميتا بدون مسافات
+
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
 
-  if (mode === "subscribe" && token === VERIFY_TOKEN) {
-    console.log("Webhook verified ✔");
-    res.status(200).send(challenge);
+  if (mode && token) {
+    if (mode === "subscribe" && token === VERIFY_TOKEN) {
+      console.log("Webhook verified ✔");
+      res.status(200).send(challenge);
+    } else {
+      console.log("❌ Token mismatch:", token);
+      res.sendStatus(403);
+    }
   } else {
-    res.sendStatus(403);
+    res.sendStatus(400);
   }
 });
+
 
 // ✅ استقبال الرسائل
 app.post("/webhook", async (req, res) => {
