@@ -7,7 +7,7 @@ app.use(express.json());
 
 const PORT         = process.env.PORT || 3000;
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "mawaheb_verify";
-const WABA_TOKEN   = process.env.WABA_TOKEN;   // Permanent Access Token
+const WABA_TOKEN   = "EAAMlJZBsLvHQBP8xKH0xP7MW7nggFBrbkmZCVH6psRPUJChlWp0cNGqCj4GJOEZADDVVa8C6Oq99m75n5JNG09daDkJo1hQLFRQtAvWFre4W5eZAU6sFeYXEZBDmVD816Q8sh42IqzVZAZCvilZAfF9cPMSqbUbEInd8TDKaoyZAMX6qdxKmJZArc6OzEt1YLcmDmBOfFER3hXXfwMAZAZA4n3l3NN0Mz33DNja3QLEZBZBZBZBgdQZDZD";   // Permanent Access Token
 const PHONE_ID     = process.env.PHONE_ID;
 const OPENAI_KEY   = process.env.OPENAI_API_KEY;
 
