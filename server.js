@@ -23,11 +23,23 @@ app.get("/webhook", (req, res) => {
 });
 
 // ====== استقبال رسائل واتساب (Meta calls POST for messages) ======
-app.post("/webhook", async (req, res) => {
-  try {
-    const entry = req.body.entry?.[0]?.changes?.[0]?.value;
-    const msg = entry?.messages?.[0];
-    if (!msg) return res.sendStatus(200);
+app.get("/webhook", (req, res) => {
+  const VERIFY_TOKEN = "mawaheb_verify";
+
+  const mode = req.query["hub.mode"];
+  const token = req.query["hub.verify_token"];
+  const challenge = req.query["hub.challenge"];
+
+  if (mode && token) {
+    if (mode === "subscribe" && token === VERIFY_TOKEN) {
+      console.log("Webhook verified!");
+      res.status(200).send(challenge);
+    } else {
+      res.sendStatus(403);
+    }
+  }
+});
+
 
     // نتعامل مع النص فقط كبداية
     const from = msg.from;              // رقم العميل
