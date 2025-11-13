@@ -10,7 +10,7 @@ const PORT = process.env.PORT || 10000;
 
 // نقرأ المتغيّرات من البيئة (من لوحة Render)
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;   // توكن واتساب من Meta
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;   // مفتاح OpenAI
+const OPENAI_API_KEY = "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";   // مفتاح OpenAI
 const VERIFY_TOKEN = "mawaheb_verify";       // mawaheb_verify مثلاً
 
 // تهيئة OpenAI
