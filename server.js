@@ -20,7 +20,7 @@ const PHONE_ID = "0561340876"; // ⚠️ هذا رقم جوال، المفروض
 const WABA_ID = "1325564105512012";
 
 const OPENAI_API_KEY =
-  "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";
+  "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";
 
 // ------------------------
 //  تهيئة OpenAI
