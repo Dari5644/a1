@@ -35,7 +35,7 @@ const openai = new OpenAI({
 async function getAIReply(message) {
   try {
     const response = await openai.responses.create({
-      model: "gpt-4o-mini",
+      model: "gpt-4-mini",
       input: [
         {
           role: "user",
