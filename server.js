@@ -7,70 +7,56 @@ import config from "./config.js";
 const app = express();
 app.use(express.json());
 
-// عميل OpenAI – يقرأ المفتاح من الـ ENV عبر config.OPENAI_API_KEY
+// تهيئة عميل OpenAI
 const openai = new OpenAI({
   apiKey: config.OPENAI_API_KEY,
 });
 
-// مسار بسيط للتجربة
-app.get("/", (req, res) => {
-  res.send("✅ WhatsApp AI Bot is running");
-});
-
-
-// ✅ Webhook Verify (GET /webhook)
+// ========== Webhook Verify ==========
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
 
-  if (mode && token === config.VERIFY_TOKEN) {
-    console.log("✅ WEBHOOK_VERIFIED");
+  if (mode === "subscribe" && token === config.VERIFY_TOKEN) {
+    console.log("✅ WEBHOOK VERIFIED");
     return res.status(200).send(challenge);
   }
 
-  console.log("❌ WEBHOOK_VERIFICATION_FAILED");
+  console.log("❌ WRONG VERIFY TOKEN");
   return res.sendStatus(403);
 });
 
 
-// ✅ استقبال رسائل واتساب (POST /webhook)
+// ========== استقبال رسائل واتساب ==========
 app.post("/webhook", async (req, res) => {
-  try {
-    console.log("📩 Incoming:", JSON.stringify(req.body, null, 2));
+  console.log("📩 Incoming:", JSON.stringify(req.body, null, 2));
 
+  try {
     const entry = req.body.entry?.[0];
     const change = entry?.changes?.[0];
     const value = change?.value;
     const message = value?.messages?.[0];
 
     if (!message || message.type !== "text") {
-      // لا يوجد رسالة نصية، نرد 200 فقط
       return res.sendStatus(200);
     }
 
-    const from = message.from;              // رقم المرسل
-    const text = message.text?.body || "";  // نص الرسالة
+    const from = message.from;
+    const text = message.text.body;
 
-    console.log(`👤 From: ${from}`);
-    console.log(`💬 Text: ${text}`);
+    console.log("👤 From:", from);
+    console.log("💬 Text:", text);
 
-    // نص الرد الافتراضي في حال حدث خطأ
-    let replyText = "حدث خطأ تقني، حاول مرة أخرى لاحقًا.";
+    // ========== طلب الرد من OpenAI ==========
+    let replyText = "صار عندي خطأ تقني… حاول مرة ثانية 🙏";
 
-    if (!config.OPENAI_API_KEY) {
-      console.error("❌ لا يوجد OPENAI_API_KEY في البيئة (ENV)");
-      replyText = "البوت غير مهيأ بشكل كامل (مفتاح الذكاء الاصطناعي غير موجود).";
-    } else {
-      try {
-        // استدعاء نموذج GPT للرد بالعربية
-        const completion = await openai.chat.completions.create({
-          model: "gpt-5-mini",
-          messages: [
-            {
+    try {
+      const completion = await openai.chat.completions.create({
+        model: "gpt-4o-mini",
         messages: [
           {
-          role: "system",
+            role: "system",
             content: `
 أنت مساعد دردشة تعمل لصالح متجر "الديم". مهامك:
 
@@ -114,58 +100,53 @@ app.post("/webhook", async (req, res) => {
             content: text,
           },
         ],
-            
+      });
 
-        replyText =
-          completion.choices?.[0]?.message?.content?.trim() ||
-          "لم أتمكن من توليد رد، حاول كتابة سؤالك بشكل أوضح.";
-      } catch (err) {
-        console.error(
-          "🔥 OpenAI ERROR:",
-          err.response?.data || err.message || err
-        );
-        replyText =
-          "حصل خطأ في خدمة الذكاء الاصطناعي، حاول مرة أخرى بعد قليل.";
-      }
+      replyText =
+        completion.choices?.[0]?.message?.content?.trim() ||
+        "ما فهمت عليك، حاول تعيد صياغة سؤالك 🌹";
+
+    } catch (err) {
+      console.error("🔥 OpenAI ERROR");
     }
 
-    // إرسال الرد عبر WhatsApp Cloud API
+    // ========== إرسال الرد عبر واتساب ==========
     try {
       const url = `https://graph.facebook.com/v21.0/${config.PHONE_ID}/messages`;
 
-      const payload = {
-        messaging_product: "whatsapp",
-        to: from,
-        text: {
-          body: replyText,
+      await axios.post(
+        url,
+        {
+          messaging_product: "whatsapp",
+          to: from,
+          type: "text",
+          text: { body: replyText },
         },
-      };
+        {
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${config.WABA_TOKEN}`,
+          },
+        }
+      );
 
-      await axios.post(url, payload, {
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${config.WABA_TOKEN}`,
-        },
-      });
-
-      console.log("✅ Reply sent to user");
+      console.log("✅ Reply sent");
     } catch (err) {
       console.error(
         "🔥 WhatsApp SEND ERROR:",
-        err.response?.data || err.message || err
+        err.response?.data || err.message
       );
     }
 
-    // لازم دايم نرجع 200 عشان واتساب ما تعيد الإرسال
     return res.sendStatus(200);
   } catch (err) {
-    console.error("❌ Webhook handler error:", err);
+    console.error("🔥 WEBHOOK ERROR:", err);
     return res.sendStatus(500);
   }
 });
 
 
-// 🚀 تشغيل السيرفر
-app.listen(config.PORT, () => {
-  console.log(`🚀 Server running on port ${config.PORT}`);
-});
+// ========== تشغيل السيرفر ==========
+app.listen(config.PORT, () =>
+  console.log(`🚀 Server is running on port ${config.PORT}`)
+);
