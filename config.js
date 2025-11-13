@@ -1,6 +1,6 @@
 // config.js
 export const config = {
-  OPENAI_API_KEY: "PUT_YOUR_KEY_HERE",   // ← حط مفتاحك هنا فقط
+ // ← حط مفتاحك هنا فقط
   WABA_TOKEN: "EAAMlJZBsLvHQBP430JnAZA3a1ymKksXew7rsERa7fYzFQKoUehqIDPqNwYoVg3RIC6OwQGd3ZA2K7ZBEn390s1SeP5Gvbs1Wi3B75UPyEYT1gKs2Sae5w0emCo7L9EqeE6ktDNFjsqZAcBnnsBFdZA8qZAI73c7jthFxFvLiMXnZC2nZBNoIgc0InxBuI5SefnAZDZD",     // ← توكن واتساب
   VERIFY_TOKEN: "mawaheb_verify",        // نفس اللي في webhook
   PHONE_ID: "830233543513578",           // هذا الـ Phone Number ID الصحيح
