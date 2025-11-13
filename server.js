@@ -1,122 +1,159 @@
-// server.js
-// بسيط – يستقبل رسائل واتساب من Meta Webhook ويرد عليها
+// server.js  (ES Module)
 
-const express = require('express');
-const axios = require('axios');
+// نستعمل import بدل require
+import express from "express";
+import bodyParser from "body-parser";
+import OpenAI from "openai";
 
 const app = express();
-app.use(express.json());
+const PORT = process.env.PORT || 10000;
 
-// ---- الإعدادات (من المتغيرات البيئية في Render) ----
+// نقرأ المتغيّرات من البيئة (من لوحة Render)
+const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;   // توكن واتساب من Meta
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY;   // مفتاح OpenAI
+const VERIFY_TOKEN = process.env.VERIFY_TOKEN;       // mawaheb_verify مثلاً
 
-// التوكن الطويل المدى من واتساب (اللي أرسلته لي)
-const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
-
-// رقم هاتف واتساب (Phone Number ID) من لوحة Meta
-// من الصور القديمة عندك كان شيء مثل: 830233543513578
-const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
-
-// التوكن اللي استخدمناه في التحقق من الـ Webhook
-// أنت كنت تستخدم: mawaheb_verify
-const VERIFY_TOKEN = process.env.VERIFY_TOKEN || 'mawaheb_verify';
-
-// بورت السيرفر (Render يعطيه تلقائيًا)
-const PORT = process.env.PORT || 3000;
-
-// ----------------------------------------------------
-
-// صفحة بسيطة للتأكد أن السيرفر شغال
-app.get('/', (req, res) => {
-  res.send('WhatsApp bot is running ✅');
+// تهيئة OpenAI
+const openai = new OpenAI({
+  apiKey: OPENAI_API_KEY,
 });
 
-// ✅ خطوة التحقق من Webhook (GET /webhook)
-app.get('/webhook', (req, res) => {
-  const mode = req.query['hub.mode'];
-  const token = req.query['hub.verify_token'];
-  const challenge = req.query['hub.challenge'];
+// حتى يقرأ JSON من Webhook
+app.use(bodyParser.json());
 
-  console.log('WEBHOOK VERIFICATION TRY:', { mode, token, challenge });
+/**
+ * GET /webhook
+ * هذا الراوت يستخدمه فيسبوك للتحقق من الـ VERIFY_TOKEN أول مرة
+ */
+app.get("/webhook", (req, res) => {
+  const mode = req.query["hub.mode"];
+  const token = req.query["hub.verify_token"];
+  const challenge = req.query["hub.challenge"];
 
-  if (mode === 'subscribe' && token === VERIFY_TOKEN) {
-    console.log('✅ WEBHOOK_VERIFIED');
+  if (mode === "subscribe" && token === VERIFY_TOKEN) {
+    console.log("WEBHOOK_VERIFIED");
     return res.status(200).send(challenge);
-  } else {
-    console.log('❌ WEBHOOK_VERIFICATION_FAILED');
-    return res.sendStatus(403);
   }
+
+  console.log("WEBHOOK_VERIFICATION_FAILED");
+  return res.sendStatus(403);
 });
 
-// ✅ استقبال الرسائل من واتساب (POST /webhook)
-app.post('/webhook', async (req, res) => {
+/**
+ * POST /webhook
+ * هنا تجينا رسائل الواتساب الفعلية
+ */
+app.post("/webhook", async (req, res) => {
   try {
     const body = req.body;
 
-    // نتأكد أن الطلب من "whatsapp_business_account"
-    if (body.object === 'whatsapp_business_account') {
-      const entry = body.entry?.[0];
-      const changes = entry?.changes?.[0];
-      const value = changes?.value;
-      const messages = value?.messages;
-
-      if (messages && messages.length > 0) {
-        const message = messages[0];
-
-        // رقم المرسل
-        const from = message.from;
-        // نص الرسالة
-        const msgBody = message.text?.body || '';
-
-        console.log('📩 رسالة جديدة من:', from, 'النص:', msgBody);
-
-        // هنا تقدر تحط منطق الذكاء الاصطناعي – حالياً بنرسل رد بسيط
-        const replyText = `شكرًا لرسالتك 🤍\n\nأستلمت منك:\n"${msgBody}"`;
-
-        await sendWhatsAppMessage(from, replyText);
-      }
+    // لو ما فيه رسائل، رجّع OK بس
+    if (
+      !body?.entry ||
+      !body.entry[0]?.changes ||
+      !body.entry[0].changes[0]?.value?.messages
+    ) {
+      return res.sendStatus(200);
     }
 
-    // لازم نرجع 200 عشان Meta ما تعيد إرسال الطلب
+    const entry = body.entry[0];
+    const changes = entry.changes[0];
+    const value = changes.value;
+    const messages = value.messages;
+    const metadata = value.metadata;
+
+    const msg = messages[0];
+    const from = msg.from; // رقم الشخص اللي أرسل
+    const text = msg.text?.body || "";
+
+    const phoneNumberId = metadata.phone_number_id; // ID رقم الواتساب التجاري
+
+    console.log("📩 رسالة من:", from, "النص:", text);
+
+    // نرسل النص لـ OpenAI ونجيب رد ذكي
+    const replyText = await generateAIReply(text);
+
+    // نرسل الرد للواتساب
+    await sendWhatsAppMessage(phoneNumberId, from, replyText);
+
+    // لازم نرجّع 200 لواتساب
     res.sendStatus(200);
-  } catch (error) {
-    console.error('❌ Error in /webhook POST:', error?.response?.data || error.message);
+  } catch (err) {
+    console.error("❌ Error in /webhook:", err);
     res.sendStatus(500);
   }
 });
 
-// ✉️ دالة إرسال رسالة عبر WhatsApp Cloud API
-async function sendWhatsAppMessage(to, text) {
-  if (!WHATSAPP_TOKEN || !PHONE_NUMBER_ID) {
-    console.error('❌ WHATSAPP_TOKEN أو PHONE_NUMBER_ID غير مضبوطين في المتغيرات البيئية!');
+/**
+ * دالة تتصل بـ OpenAI وترجع رد
+ */
+async function generateAIReply(userText) {
+  try {
+    if (!OPENAI_API_KEY) {
+      console.warn("⚠️ OPENAI_API_KEY غير موجود في Environment");
+      return "عذرًا، الخدمة غير مفعّلة حاليًا.";
+    }
+
+    const completion = await openai.responses.create({
+      model: "gpt-4.1-mini",
+      input: [
+        {
+          role: "system",
+          content:
+            "أنت بوت واتساب ذكي، تجاوب باختصار وبأسلوب لطيف باللغة العربية.",
+        },
+        {
+          role: "user",
+          content: userText || "مرحبا",
+        },
+      ],
+      max_output_tokens: 200,
+    });
+
+    const answer =
+      completion.output[0].content[0].text || "لم أفهم سؤالك، حاول صياغته بشكل أوضح.";
+    return answer;
+  } catch (err) {
+    console.error("❌ Error calling OpenAI:", err);
+    return "واجهتني مشكلة أثناء معالجة سؤالك، حاول لاحقًا.";
+  }
+}
+
+/**
+ * دالة إرسال رسالة واتساب عبر Graph API
+ */
+async function sendWhatsAppMessage(phoneNumberId, to, text) {
+  if (!WHATSAPP_TOKEN) {
+    console.error("❌ WHATSAPP_TOKEN غير موجود في Environment");
     return;
   }
 
-  const url = `https://graph.facebook.com/v20.0/${PHONE_NUMBER_ID}/messages`;
+  const url = `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`;
 
-  const data = {
-    messaging_product: 'whatsapp',
+  const payload = {
+    messaging_product: "whatsapp",
     to,
     text: { body: text },
   };
 
-  try {
-    const res = await axios.post(url, data, {
-      headers: {
-        Authorization: `Bearer ${WHATSAPP_TOKEN}`,
-        'Content-Type': 'application/json',
-      },
-    });
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+    },
+    body: JSON.stringify(payload),
+  });
 
-    console.log('✅ تم إرسال الرد بنجاح:', res.data);
-  } catch (error) {
-    console.error(
-      '❌ خطأ في إرسال رسالة واتساب:',
-      error?.response?.data || error.message
-    );
+  const data = await res.json();
+  console.log("📤 WhatsApp response:", data);
+
+  if (!res.ok) {
+    console.error("❌ Error sending WhatsApp message:", data);
   }
 }
 
 // تشغيل السيرفر
 app.listen(PORT, () => {
-  console.log(`🚀 Server is running on port ${PORT}`);
+  console.log(`🚀 Server running on port ${PORT}`);
 });
