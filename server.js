@@ -2,20 +2,18 @@
 import express from "express";
 import fetch from "node-fetch";
 
+const express = require("express");
 const app = express();
 app.use(express.json());
 
 const PORT         = process.env.PORT || 3000;
-const VERIFY_TOKEN = "mawaheb_verify";
 const WABA_TOKEN   = "EAAMlJZBsLvHQBP8xKH0xP7MW7nggFBrbkmZCVH6psRPUJChlWp0cNGqCj4GJOEZADDVVa8C6Oq99m75n5JNG09daDkJo1hQLFRQtAvWFre4W5eZAU6sFeYXEZBDmVD816Q8sh42IqzVZAZCvilZAfF9cPMSqbUbEInd8TDKaoyZAMX6qdxKmJZArc6OzEt1YLcmDmBOfFER3hXXfwMAZAZA4n3l3NN0Mz33DNja3QLEZBZBZBZBgdQZDZD";   // Permanent Access Token
 const PHONE_ID     = "0561340876";
 const OPENAI_KEY   = "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";
 
 // ✅ GET للتحقق من الويبهوك (Meta يطلبها مرة واحدة)
 // ✅ تحقق الويبهوك – استعمل نفس التوكن اللي في ميتا بالضبط
-const express = require("express");
-const app = express();
-app.use(express.json());
+
 
 const VERIFY_TOKEN = "mawaheb_verify";
 
