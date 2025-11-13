@@ -13,12 +13,14 @@ app.use(express.urlencoded({ extended: true }));
 
 // ------------ OpenAI ------------
 const openai = new OpenAI({
-  apiKey: config.OPENAI_API_KEY, // المفتاح من config.js (أو من env)
+  apiKey: config.OPENAI_API_KEY,
 });
 
-// ------------ تخزين المحادثات في الذاكرة -------------
-// conversations = { wa_id: [ { from:'user'|'bot'|'agent', text, time } ] }
+// ------------ تخزين المحادثات + وضع الموظف فقط -------------
+// conversations = { wa_id: [ { from:'user'|'bot'|'agent'|'system', text, time } ] }
 const conversations = {};
+// humanOnly = { wa_id: true/false }
+const humanOnly = {};
 
 // دالة مساعدة تضيف رسالة في المحادثة
 function addMessage(waId, from, text) {
@@ -97,23 +99,56 @@ app.post("/webhook", async (req, res) => {
       // خزّن رسالة المستخدم
       addMessage(waId, "user", text);
 
-      // لو كتب "ابي اكلم انسان" أو كلام مشابه -> نحوله للبشر ويوقف البوت
       const lower = text.trim().toLowerCase();
+
+      // ---- اذا طلب "اكلم انسان" نفعل وضع الموظف فقط ----
       if (
         lower.includes("اكلم انسان") ||
         lower.includes("موظف") ||
         lower.includes("دعم") ||
         lower.includes("خدمة عملاء") ||
-        lower.includes("ابيك انت")
+        lower.includes("خدمه عملاء") ||
+        lower.includes("تكلم انسان")
       ) {
+        humanOnly[waId] = true;
         const humanMsg =
           "تم تحويلك لموظف متجر الديم 👨‍💼، تقدر تكمل هنا وسيتم الرد عليك يدويًا بإذن الله.";
-        await sendWhatsAppMessage(waId, humanMsg, "bot");
+        await sendWhatsAppMessage(waId, humanMsg, "system");
         return res.sendStatus(200);
       }
 
-      // استدعاء OpenAI للرد الذكي + تعليمات متجر الديم
+      // ---- لو الرقم في وضع موظف فقط، البوت يسكت ----
+      if (humanOnly[waId]) {
+        console.log(`ℹ️ ${waId} في وضع موظف فقط، لا يتم الرد آليًا.`);
+        return res.sendStatus(200);
+      }
+
+      // ---- لو كانت أول رسالة وبها سلام/اهلا، نرسل الترحيب الثابت ----
+      const isFirstMessage = conversations[waId].length === 1;
+      if (
+        isFirstMessage &&
+        (lower.includes("السلام عليكم") ||
+          lower.startsWith("السلام") ||
+          lower.includes("هلا") ||
+          lower.includes("اهلا") ||
+          lower.includes("مرحبا"))
+      ) {
+        const greet =
+          "وعليكم السلام، حياك الله في متجر الديم ❤️🌹 كيف أقدر أخدمك؟";
+        await sendWhatsAppMessage(waId, greet, "bot");
+        return res.sendStatus(200);
+      }
+
+      // ---- استدعاء OpenAI مع ذاكرة المحادثة ----
       try {
+        // تجهيز آخر 8 رسائل كـ سياق
+        const history = (conversations[waId] || []).slice(-8).map((m) => {
+          if (m.from === "user") return { role: "user", content: m.text };
+          if (m.from === "bot") return { role: "assistant", content: m.text };
+          // لا نرسل رسائل الموظف أو النظام للـ AI
+          return null;
+        }).filter(Boolean);
+
         const completion = await openai.chat.completions.create({
           model: "gpt-4o-mini",
           messages: [
@@ -121,25 +156,24 @@ app.post("/webhook", async (req, res) => {
               role: "system",
               content: `
 أنت مساعد دردشة لمتجر "الديم للمفارش".
-التزم بالآتي:
 
-- إذا كتب العميل "السلام عليكم" أو "اهلا" أو "مرحبا" أو أي ترحيب:
-  رد بـ: "وعليكم السلام، حياك الله في متجر الديم ❤️🌹 كيف أقدر أخدمك؟"
-
-- لا تعطي رابط المتجر إلا إذا طلبه العميل صراحة، والرابط هو:
-  https://aldeem35.com/
-
+القواعد:
+- تحدث بالعربية الفصحى البسيطة، مع لمسة ودية.
+- إذا كان أول حديث فيه سلام أو ترحيب، جملة الترحيب الأساسية هي:
+  "وعليكم السلام، حياك الله في متجر الديم ❤️🌹 كيف أقدر أخدمك؟"
+- لا تعطي رابط المتجر إلا إذا طلبه العميل صراحة.
+  رابط المتجر: https://aldeem35.com/
 - إذا سأل عن منتج:
-  * حاول أن ترد بشكل طبيعي وبسيط عن نوع المنتج، المقاس، الاستخدام… إلخ.
-  * لا تخترع منتجات غير موجودة، ولا تذكر الأسعار من عندك.
-  * إذا احتجت سعر أو توفر دقيق قل له: "تقدر تتأكد من السعر والتوفر من متجر الديم مباشرة 😊".
-
-- إذا قال "ابي اكلم انسان" أو ما شابه فالمفروض ما ترد أنت (لكن هذه الحالة تمت معالجتها في الكود).
-
-- لا ترسل رسائل طويلة جدًا، خلي جوابك قصير ومباشر ومفهوم.
-- رد دائمًا كأنك إنسان من فريق متجر الديم، مو روبوت.
+  • اشْرَح له المنتج بشكل بسيط (النوع، الاستخدام، الخ).
+  • لا تخترع منتجات غير موجودة.
+  • لا تذكر أسعار من عندك، فقط قل له إنه يقدر يتأكد من السعر والتوفر من المتجر.
+- لا ترسل رسائل طويلة مزعجة، خلك مختصر وواضح.
+- لا تقدم قائمة طويلة بما يمكنك فعله، فقط جاوب على السؤال المباشر.
+- إذا سأل: "وش تقدر تخدمني؟" وضّح بشكل مختصر: تقدر أساعدك في الاستفسار عن المنتجات، المقاسات، وطريقة الطلب… إلخ.
+- تفاعل كأنك إنسان من فريق متجر الديم، مو روبوت جامد.
 `,
             },
+            ...history,
             { role: "user", content: text },
           ],
         });
@@ -154,7 +188,7 @@ app.post("/webhook", async (req, res) => {
         await sendWhatsAppMessage(
           waId,
           "صار عندي خطأ تقني بسيط مع الذكاء الاصطناعي، جرب بعد شوي أو اكتب: ابي اكلم انسان 🤝",
-          "bot"
+          "system"
         );
       }
 
@@ -184,10 +218,17 @@ app.get("/", (req, res) => {
   );
 });
 
+// ------------ API لبيانات الـ Inbox (تُحدَّث تلقائيًا) -------------
+app.get("/inbox/data", (req, res) => {
+  res.json({
+    conversations,
+    humanOnly,
+  });
+});
+
 // ------------ لوحة الـ Inbox + دردشة -------------
 app.get("/inbox", (req, res) => {
-  // حوّل المحادثات إلى JSON عشان نعرضها في الواجهة
-  const data = JSON.stringify(conversations || {});
+  const initial = JSON.stringify({ conversations, humanOnly });
 
   res.send(`
 <!DOCTYPE html>
@@ -267,6 +308,7 @@ app.get("/inbox", (req, res) => {
       display:flex;
       align-items:center;
       justify-content:space-between;
+      gap: 12px;
     }
     .chat-header .title {
       font-size: 16px;
@@ -277,6 +319,40 @@ app.get("/inbox", (req, res) => {
       color: #94a3b8;
       margin-top:2px;
     }
+    .chat-header-right {
+      display:flex;
+      flex-direction:column;
+      align-items:flex-end;
+      gap:4px;
+      font-size:12px;
+    }
+    .status-pill {
+      padding:3px 8px;
+      border-radius:999px;
+      border:1px solid #22c55e55;
+      color:#bbf7d0;
+      background:#16a34a22;
+    }
+    .status-pill.off {
+      border-color:#f9737355;
+      color:#fecaca;
+      background:#b91c1c22;
+    }
+    .small-note {
+      color:#94a3b8;
+      font-size:11px;
+    }
+    .btn-reset {
+      padding:4px 10px;
+      border-radius:999px;
+      border:none;
+      background:linear-gradient(135deg,#22c55e,#a3e635);
+      color:#022c22;
+      font-weight:600;
+      cursor:pointer;
+      font-size:11px;
+    }
+
     .chat-messages {
       flex:1;
       padding: 16px;
@@ -321,6 +397,16 @@ app.get("/inbox", (req, res) => {
       color:#020617;
       border-bottom-left-radius:4px;
       border:1px solid #cbd5f5;
+    }
+    .from-system {
+      justify-content:center;
+    }
+    .from-system .bubble {
+      background:#020617;
+      color:#e5e7eb;
+      border-radius:999px;
+      font-size:12px;
+      border:1px dashed #475569;
     }
     .time {
       font-size:11px;
@@ -388,7 +474,11 @@ app.get("/inbox", (req, res) => {
           <div class="title" id="chatTitle">اختر عميل من القائمة</div>
           <div class="subtitle" id="chatSubtitle">لن يتم حفظ أي بيانات في قاعدة بيانات، فقط في ذاكرة السيرفر.</div>
         </div>
-        <div style="font-size:12px;color:#94a3b8;">لوحة الموظف 👨‍💼</div>
+        <div class="chat-header-right">
+          <div id="botStatus" class="status-pill off">البوت غير نشط</div>
+          <button id="botResetBtn" class="btn-reset" type="button">إعادة تشغيل البوت 🤖</button>
+          <div class="small-note">إذا العميل قال: "ابي اكلم انسان" يتم إيقاف البوت لهذا الرقم.</div>
+        </div>
       </div>
       <div id="chatMessages" class="chat-messages">
         <div class="empty-state">لا توجد محادثة محددة حتى الآن.</div>
@@ -402,7 +492,9 @@ app.get("/inbox", (req, res) => {
   </div>
 
   <script>
-    const conversations = ${data};
+    const initialData = ${initial};
+    let conversations = initialData.conversations || {};
+    let humanOnly = initialData.humanOnly || {};
 
     const contactListEl = document.getElementById("contactList");
     const chatMessagesEl = document.getElementById("chatMessages");
@@ -411,6 +503,8 @@ app.get("/inbox", (req, res) => {
     const waIdInput = document.getElementById("wa_id");
     const agentForm = document.getElementById("agentForm");
     const agentTextInput = document.getElementById("agentText");
+    const botStatusEl = document.getElementById("botStatus");
+    const botResetBtn = document.getElementById("botResetBtn");
 
     let currentWaId = null;
 
@@ -442,6 +536,8 @@ app.get("/inbox", (req, res) => {
       if (!currentWaId) {
         chatTitleEl.textContent = "اختر عميل من القائمة";
         chatSubtitleEl.textContent = "سيتم عرض المحادثة هنا.";
+        botStatusEl.textContent = "البوت غير نشط";
+        botStatusEl.classList.add("off");
         chatMessagesEl.innerHTML = '<div class="empty-state">لا توجد محادثة محددة حتى الآن.</div>';
         waIdInput.value = "";
         return;
@@ -451,19 +547,28 @@ app.get("/inbox", (req, res) => {
       chatSubtitleEl.textContent = "عدد الرسائل: " + msgs.length;
       waIdInput.value = currentWaId;
 
+      const isHumanOnly = !!humanOnly[currentWaId];
+      if (isHumanOnly) {
+        botStatusEl.textContent = "البوت متوقف (وضع موظف فقط)";
+        botStatusEl.classList.add("off");
+      } else {
+        botStatusEl.textContent = "البوت نشط لهذا الرقم";
+        botStatusEl.classList.remove("off");
+      }
+
       chatMessagesEl.innerHTML = "";
       msgs.forEach((m) => {
         const row = document.createElement("div");
         let cls = "from-user";
         if (m.from === "bot") cls = "from-bot";
         if (m.from === "agent") cls = "from-agent";
+        if (m.from === "system") cls = "from-system";
 
         row.className = "bubble-row " + cls;
         row.innerHTML = '<div><div class="bubble">' + m.text + '</div><div class="time">' + (m.time || "") + '</div></div>';
         chatMessagesEl.appendChild(row);
       });
 
-      // ننزل لآخر الرسائل
       chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
     }
 
@@ -479,7 +584,6 @@ app.get("/inbox", (req, res) => {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ wa_id: waId, text }),
         });
-        // أضف الرسالة محليًا
         if (!conversations[waId]) conversations[waId] = [];
         conversations[waId].push({
           from: "agent",
@@ -493,20 +597,71 @@ app.get("/inbox", (req, res) => {
       }
     });
 
+    botResetBtn.addEventListener("click", async () => {
+      if (!currentWaId) return;
+      try {
+        await fetch("/agent/bot-reset", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ wa_id: currentWaId }),
+        });
+        humanOnly[currentWaId] = false;
+        // نضيف رسالة سيستم محلياً
+        if (!conversations[currentWaId]) conversations[currentWaId] = [];
+        conversations[currentWaId].push({
+          from: "system",
+          text: "تم إعادة تشغيل البوت لهذا العميل.",
+          time: new Date().toLocaleTimeString("ar-SA", {hour:"2-digit",minute:"2-digit"})
+        });
+        renderChat();
+      } catch (err) {
+        alert("تعذّر إعادة تشغيل البوت.");
+      }
+    });
+
+    // تحديث تلقائي كل 3 ثواني
+    async function refreshData() {
+      try {
+        const res = await fetch("/inbox/data");
+        const data = await res.json();
+        conversations = data.conversations || {};
+        humanOnly = data.humanOnly || {};
+        renderContacts();
+        renderChat();
+      } catch (e) {
+        console.error("خطأ في التحديث التلقائي", e);
+      }
+    }
+
     renderContacts();
     renderChat();
+    setInterval(refreshData, 3000);
   </script>
 </body>
 </html>
 `);
 });
 
-// ------------ Endpoint إرسال من الموظف (تستدعيه الواجهة) -------------
+// ------------ Endpoint إرسال من الموظف -------------
 app.post("/agent/send", async (req, res) => {
   const { wa_id, text } = req.body || {};
   if (!wa_id || !text) return res.status(400).json({ ok: false });
 
   await sendWhatsAppMessage(wa_id, text, "agent");
+  return res.json({ ok: true });
+});
+
+// ------------ Endpoint إعادة تشغيل البوت -------------
+app.post("/agent/bot-reset", async (req, res) => {
+  const { wa_id } = req.body || {};
+  if (!wa_id) return res.status(400).json({ ok: false });
+
+  humanOnly[wa_id] = false;
+  await sendWhatsAppMessage(
+    wa_id,
+    "تم إعادة تشغيل البوت لمتجر الديم 🤖، تقدر تكتب سؤالك الآن.",
+    "system"
+  );
   return res.json({ ok: true });
 });
 
