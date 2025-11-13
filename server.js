@@ -30,9 +30,9 @@ let GLOBAL_BOT_ENABLED = true;
 
 // =========== مفاتيح من env (لا تحطها داخل الكود) ===========
 const PORT = process.env.PORT || 3000;
-const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "mawaheb_verify";
-const WABA_TOKEN = process.env.WABA_TOKEN; // من Meta
-const PHONE_ID = process.env.PHONE_ID;     // phone_number_id من Meta
+const VERIFY_TOKEN = config.js.VERIFY_TOKEN || "mawaheb_verify";
+const WABA_TOKEN = config.js.WABA_TOKEN; // من Meta
+const PHONE_ID = config.js.PHONE_ID;     // phone_number_id من Meta
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY; // من OpenAI
 
 if (!WABA_TOKEN || !PHONE_ID || !OPENAI_API_KEY) {
