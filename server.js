@@ -19,8 +19,7 @@ const WABA_TOKEN =
 const PHONE_ID = "830233543513578"; // ⚠️ هذا رقم جوال، المفروض Phone Number ID يكون رقم طويل من Meta مثل 1234567890
 const WABA_ID = "1325564105512012";
 
-const OPENAI_API_KEY =
-  "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";
+const OPENAI_API_KEY = "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";
 
 // ------------------------
 //  تهيئة OpenAI
