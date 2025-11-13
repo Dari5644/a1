@@ -13,26 +13,34 @@ const OPENAI_KEY   = "sk-proj-yqG5epFpVSgsvtHuA3Mty4jcTJl0UkDrOyI61gm-DuZQ2k1mAs
 
 // ✅ GET للتحقق من الويبهوك (Meta يطلبها مرة واحدة)
 // ✅ تحقق الويبهوك – استعمل نفس التوكن اللي في ميتا بالضبط
-// GET webhook verification - REQUIRED BY META
-app.post("/webhook", (req, res) => {
-  const VERIFY_TOKEN = "mawaheb_verify"; // نفس التوكن اللي حطيته في Meta
+const express = require("express");
+const app = express();
+app.use(express.json());
 
-  const mode = req.query["hub.mode"];
-  const token = req.query["hub.verify_token"];
-  const challenge = req.query["hub.challenge"];
+const VERIFY_TOKEN = "mawaheb_verify";
 
-  if (mode && token) {
+// GET webhook (for verification)
+app.get("/webhook", (req, res) => {
+    const mode = req.query["hub.mode"];
+    const token = req.query["hub.verify_token"];
+    const challenge = req.query["hub.challenge"];
+
     if (mode === "subscribe" && token === VERIFY_TOKEN) {
-      console.log("Webhook verified successfully ✔");
-      res.status(200).send(challenge);
+        console.log("WEBHOOK_VERIFIED");
+        res.status(200).send(challenge);
     } else {
-      console.log("❌ Wrong token received:", token);
-      res.sendStatus(403);
+        res.sendStatus(403);
     }
-  } else {
-    res.sendStatus(400);
-  }
 });
+
+// POST webhook (receiving messages)
+app.post("/webhook", (req, res) => {
+    console.log("New message:", JSON.stringify(req.body, null, 2));
+    res.sendStatus(200);
+});
+
+app.listen(10000, () => console.log("Webhook running"));
+
 
 
 
