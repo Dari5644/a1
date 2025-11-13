@@ -1,671 +1,382 @@
 // server.js
+// بوت واتساب + OpenAI + تحويل لخدمة العملاء + تنبيه الموظفين + يدعم تغيير اسم المتجر من سطر واحد
+
 import express from "express";
-import bodyParser from "body-parser";
 import axios from "axios";
 import OpenAI from "openai";
-import config from "./config.js";
 
-const app = express();
+// =========== إعدادات قابلة للتعديل بسرعة ===========
+
+// غيّر اسم المتجر هنا
+const STORE_NAME = "متجر الديم";
+
+// غيّر اسم البوت هنا (لو حاب تستخدمه في الردود)
+const BOT_NAME = "مساعد " + STORE_NAME;
+
+// غيّر رابط المتجر هنا (لما العميل يطلب رابط المتجر)
+const STORE_URL = "https://aldeem35.com/";
+
+// غيّر الدومين حق لوحة البوت (لما يرسل رابط المحادثة للموظفين)
+const PANEL_BASE_URL = "https://a1-9b9e.onrender.com"; // عدّله إذا غيّرت دومين Render
+
+// أرقام خدمة العملاء اللي تجيهم رسالة لما يتم تحويل عميل (بدون +)
+const AGENT_NUMBERS = [
+  // مثال:
+  // "9665XXXXXXXX",
+];
+
+// هل البوت مفعّل على الكل؟ (تقدر تغيّره لاحقاً من API إذا تبي)
+let GLOBAL_BOT_ENABLED = true;
+
+// =========== مفاتيح من env (لا تحطها داخل الكود) ===========
 const PORT = process.env.PORT || 3000;
+const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "mawaheb_verify";
+const WABA_TOKEN = process.env.WABA_TOKEN; // من Meta
+const PHONE_ID = process.env.PHONE_ID;     // phone_number_id من Meta
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY; // من OpenAI
 
-app.use(bodyParser.json());
-app.use(express.urlencoded({ extended: true }));
-
-// ------------ OpenAI ------------
-const openai = new OpenAI({
-  apiKey: config.OPENAI_API_KEY,
-});
-
-// ------------ تخزين المحادثات + وضع الموظف فقط -------------
-// conversations = { wa_id: [ { from:'user'|'bot'|'agent'|'system', text, time } ] }
-const conversations = {};
-// humanOnly = { wa_id: true/false }
-const humanOnly = {};
-
-// دالة مساعدة تضيف رسالة في المحادثة
-function addMessage(waId, from, text) {
-  if (!conversations[waId]) conversations[waId] = [];
-  conversations[waId].push({
-    from,
-    text,
-    time: new Date().toLocaleTimeString("ar-SA", {
-      hour: "2-digit",
-      minute: "2-digit",
-    }),
-  });
+if (!WABA_TOKEN || !PHONE_ID || !OPENAI_API_KEY) {
+  console.warn("⚠️ تأكد من ضبط WABA_TOKEN و PHONE_ID و OPENAI_API_KEY في env");
 }
 
-// ------------ دالة إرسال رسالة واتساب -------------
-async function sendWhatsAppMessage(waId, text, sender = "bot") {
-  try {
-    const url = `https://graph.facebook.com/v19.0/${config.PHONE_ID}/messages`;
+const app = express();
+app.use(express.json());
 
+// =========== OpenAI ===========
+
+const openai = new OpenAI({
+  apiKey: OPENAI_API_KEY,
+});
+
+// =========== ذاكرة المحادثات ===========
+
+// نحفظ المحادثة لكل عميل في الذاكرة
+const conversations = {};         // { waId: [ {role:'user'|'assistant', content} ] }
+const humanOnly = {};             // { waId: true/false } إذا true → ما يرد البوت
+const waitingTransferConfirm = {}; // { waId: true/false } إذا true → ينتظر من العميل (ايه/لا)
+
+// إضافة رسالة للذاكرة
+function addMessage(waId, role, content) {
+  if (!conversations[waId]) conversations[waId] = [];
+  conversations[waId].push({ role, content });
+
+  // نخلي الذاكرة قصيرة (آخر 20 رسالة فقط)
+  if (conversations[waId].length > 20) {
+    conversations[waId] = conversations[waId].slice(-20);
+  }
+}
+
+// إرسال رسالة واتساب
+async function sendWhatsAppMessage(to, text, tag = "bot") {
+  if (!WABA_TOKEN || !PHONE_ID) {
+    console.error("❌ مفقود WABA_TOKEN أو PHONE_ID");
+    return;
+  }
+
+  try {
+    const url = `https://graph.facebook.com/v21.0/${PHONE_ID}/messages`;
     const payload = {
       messaging_product: "whatsapp",
-      to: waId,
+      to,
       type: "text",
       text: { body: text },
     };
 
     await axios.post(url, payload, {
       headers: {
-        Authorization: `Bearer ${config.WABA_TOKEN}`,
+        Authorization: `Bearer ${WABA_TOKEN}`,
         "Content-Type": "application/json",
       },
     });
 
-    console.log(`✅ رسالة أرسلت إلى ${waId}: ${text}`);
-    addMessage(waId, sender, text);
+    console.log(`✅ WhatsApp (${tag}) → ${to}: ${text}`);
   } catch (err) {
     console.error("🔥 WhatsApp SEND ERROR:", err.response?.data || err.message);
   }
 }
 
-// ------------ Webhook Verify (GET) -------------
+// تنبيه أرقام خدمة العملاء برسالة + رابط المحادثة
+async function notifyAgents(waId, lastText, customerName) {
+  if (!AGENT_NUMBERS.length) {
+    console.log("ℹ️ لا يوجد أرقام موظفين في AGENT_NUMBERS");
+    return;
+  }
+
+  const link = `${PANEL_BASE_URL}/inbox?wa=${waId}`;
+
+  const msg =
+    `🚨 عميل تم تحويله لخدمة العملاء في ${STORE_NAME}.\n\n` +
+    `👤 الاسم: ${customerName || "عميل"}\n` +
+    `📞 الرقم: ${waId}\n\n` +
+    `💬 آخر رسالة من العميل:\n${lastText}\n\n` +
+    `🧷 افتح المحادثة من هنا:\n${link}`;
+
+  for (const num of AGENT_NUMBERS) {
+    await sendWhatsAppMessage(num, msg, "agent-alert");
+  }
+}
+
+// استدعاء OpenAI للرد
+async function getAssistantReply(waId, userText) {
+  addMessage(waId, "user", userText);
+
+  const history = (conversations[waId] || []).slice(-10);
+
+  const messages = [
+    {
+      role: "system",
+      content: `
+أنت ${BOT_NAME}، مساعد دردشة ذكي يعمل لصالح "${STORE_NAME}".
+
+القواعد:
+- تتحدث بالعربية البسيطة وبأسلوب محترم وودود.
+- إذا قال العميل "السلام عليكم" أو "هلا" أو "اهلا" أو "مرحبا" → رحّب به بعبارة مثل:
+  "وعليكم السلام، حياك الله في ${STORE_NAME} ❤️🌹 كيف أقدر أخدمك؟"
+- لا تعطي رابط المتجر إلا إذا طلبه العميل صراحة، وعندها استخدم هذا الرابط فقط:
+  ${STORE_URL}
+- إذا سأل عن المنتجات، اشرحها بشكل عام (نوع المنتج، استخدامه...) لكن لا تخترع بيانات مخزون أو حالة طلب.
+- لا تذكر أسعار دقيقة إذا لم تكن متأكداً، بل قل له يمكنه التأكد من الأسعار من خلال المتجر.
+- لا ترسل رسائل طويلة مزعجة؛ كن مختصراً وواضحاً.
+- إذا سأل "وش تقدر تخدمني؟" اذكر باختصار أنك تساعده في الاستفسار عن المنتجات، المقاسات، طريقة الشراء، ورابط المتجر عند الطلب.
+- لا تذكر أنك نموذج ذكاء اصطناعي، بل تحدث كأنك موظف افتراضي من فريق ${STORE_NAME}.
+`,
+    },
+    ...history,
+    { role: "user", content: userText },
+  ];
+
+  const completion = await openai.chat.completions.create({
+    model: "gpt-4o-mini",
+    messages,
+    temperature: 0.4,
+  });
+
+  const reply = completion.choices[0]?.message?.content || `حياك الله في ${STORE_NAME} 💚`;
+  addMessage(waId, "assistant", reply);
+  return reply;
+}
+
+// ============ Webhook GET (التحقق من Meta) ============
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
 
-  if (mode === "subscribe" && token === config.VERIFY_TOKEN) {
-    console.log("✅ WEBHOOK_VERIFIED");
+  if (mode === "subscribe" && token === VERIFY_TOKEN) {
+    console.log("✅ WEBHOOK VERIFIED");
     return res.status(200).send(challenge);
-  } else {
-    return res.sendStatus(403);
   }
+
+  console.log("❌ WEBHOOK VERIFY FAILED");
+  return res.sendStatus(403);
 });
 
-// ------------ Webhook Receive (POST) -------------
+// ============ Webhook POST (استقبال رسائل واتساب) ============
 app.post("/webhook", async (req, res) => {
+  const body = req.body;
+  console.log("📩 Incoming:", JSON.stringify(body, null, 2));
+
+  if (body.object !== "whatsapp_business_account") {
+    return res.sendStatus(200);
+  }
+
   try {
-    const body = req.body;
+    const entry = body.entry?.[0];
+    const change = entry?.changes?.[0];
+    const value = change?.value;
 
-    if (
-      body.object === "whatsapp_business_account" &&
-      body.entry &&
-      body.entry[0]?.changes &&
-      body.entry[0].changes[0]?.value?.messages
-    ) {
-      const change = body.entry[0].changes[0];
-      const value = change.value;
-      const message = value.messages[0];
-      const waId = message.from; // رقم العميل
-      const text = message.text?.body || "";
-
-      console.log("📩 Incoming:", JSON.stringify(body, null, 2));
-      console.log(`👤 From: ${waId}`);
-      console.log(`💬 Text: ${text}`);
-
-      // خزّن رسالة المستخدم
-      addMessage(waId, "user", text);
-
-      const lower = text.trim().toLowerCase();
-
-      // ---- اذا طلب "اكلم انسان" نفعل وضع الموظف فقط ----
-      if (
-        lower.includes("اكلم انسان") ||
-        lower.includes("موظف") ||
-        lower.includes("دعم") ||
-        lower.includes("خدمة عملاء") ||
-        lower.includes("خدمه عملاء") ||
-        lower.includes("تكلم انسان")
-      ) {
-        humanOnly[waId] = true;
-        const humanMsg =
-          "تم تحويلك لموظف متجر الديم 👨‍💼، تقدر تكمل هنا وسيتم الرد عليك يدويًا بإذن الله.";
-        await sendWhatsAppMessage(waId, humanMsg, "system");
-        return res.sendStatus(200);
-      }
-
-      // ---- لو الرقم في وضع موظف فقط، البوت يسكت ----
-      if (humanOnly[waId]) {
-        console.log(`ℹ️ ${waId} في وضع موظف فقط، لا يتم الرد آليًا.`);
-        return res.sendStatus(200);
-      }
-
-      // ---- لو كانت أول رسالة وبها سلام/اهلا، نرسل الترحيب الثابت ----
-      const isFirstMessage = conversations[waId].length === 1;
-      if (
-        isFirstMessage &&
-        (lower.includes("السلام عليكم") ||
-          lower.startsWith("السلام") ||
-          lower.includes("السلام عليكم و رحمه الله") ||
-          lower.includes("السلام عليكم و رحمه الله وبركاته") ||
-          lower.includes("السلام عليكم و رحمه الله وبركاتة"))
-      ) {
-        const greet =
-          "وعليكم السلام، حياك الله في متجر الديم ❤️🌹 كيف أقدر أخدمك؟";
-        await sendWhatsAppMessage(waId, greet, "bot");
-        return res.sendStatus(200);
-      }
-
-      // ---- استدعاء OpenAI مع ذاكرة المحادثة ----
-      try {
-        // تجهيز آخر 8 رسائل كـ سياق
-        const history = (conversations[waId] || []).slice(-8).map((m) => {
-          if (m.from === "user") return { role: "user", content: m.text };
-          if (m.from === "bot") return { role: "assistant", content: m.text };
-          // لا نرسل رسائل الموظف أو النظام للـ AI
-          return null;
-        }).filter(Boolean);
-
-        const completion = await openai.chat.completions.create({
-          model: "gpt-4o-mini",
-          messages: [
-            {
-              role: "system",
-              content: `
-أنت مساعد دردشة لمتجر "الديم للمفارش".
-
-القواعد:
-- تحدث بالعربية الفصحى البسيطة، مع لمسة ودية.
-- إذا كان أول حديث فيه سلام أو ترحيب، جملة الترحيب الأساسية هي:
-  "وعليكم السلام، حياك الله في متجر الديم ❤️🌹 كيف أقدر أخدمك؟"
-- لا تعطي رابط المتجر إلا إذا طلبه العميل صراحة.
-  رابط المتجر: https://aldeem35.com/
-- إذا سأل عن منتج:
-  • اشْرَح له المنتج بشكل بسيط (النوع، الاستخدام، الخ).
-  • لا تخترع منتجات غير موجودة.
-  • لا تذكر أسعار من عندك، فقط قل له إنه يقدر يتأكد من السعر والتوفر من المتجر.
-- لا ترسل رسائل طويلة مزعجة، خلك مختصر وواضح.
-- لا تقدم قائمة طويلة بما يمكنك فعله، فقط جاوب على السؤال المباشر.
-- إذا سأل: "وش تقدر تخدمني؟" وضّح بشكل مختصر: تقدر أساعدك في الاستفسار عن المنتجات، المقاسات، وطريقة الطلب… إلخ.
-- تفاعل كأنك إنسان من فريق متجر الديم، مو روبوت جامد.
-- وانت تتكلم معه اذا بدا يقول اشياء ماتقدر تسويها قل تريد انقلك ل خدمه العملاء اذا قال لا استكمل معه اذا قال اي طف البوت `,
-            },
-            ...history,
-            { role: "user", content: text },
-          ],
-        });
-
-        const reply =
-          completion.choices[0].message?.content ||
-          "حياك الله في متجر الديم، كيف أقدر أخدمك؟";
-
-        await sendWhatsAppMessage(waId, reply, "bot");
-      } catch (aiErr) {
-        console.error("🔥 OpenAI ERROR:", aiErr.message);
-        await sendWhatsAppMessage(
-          waId,
-          "صار عندي خطأ تقني بسيط مع الذكاء الاصطناعي، جرب بعد شوي أو اكتب: ابي اكلم انسان 🤝",
-          "system"
-        );
-      }
-
+    const message = value?.messages?.[0];
+    if (!message || message.type !== "text") {
       return res.sendStatus(200);
     }
 
+    const waId = message.from; // رقم العميل
+    const text = message.text?.body || "";
+    const lower = text.trim().toLowerCase();
+    const customerName = value?.contacts?.[0]?.profile?.name || "عميل";
+
+    if (!conversations[waId]) conversations[waId] = [];
+
+    // ========== أوامر تحكم من العميل ==========
+    // إعادة تشغيل البوت
+    if (
+      lower.includes("اعاده تشغيل البوت") ||
+      lower.includes("اعادة تشغيل البوت") ||
+      lower.includes("رجع البوت") ||
+      lower.includes("شغل البوت")
+    ) {
+      humanOnly[waId] = false;
+      waitingTransferConfirm[waId] = false;
+
+      await sendWhatsAppMessage(
+        waId,
+        `تم إعادة تشغيل البوت في ${STORE_NAME} 🤖.\nتفضل، كيف أقدر أخدمك الآن؟`,
+        "system"
+      );
+      return res.sendStatus(200);
+    }
+
+    // ========== تأكيد/رفض تحويله لخدمة العملاء ==========
+    if (waitingTransferConfirm[waId]) {
+      if (
+        lower.includes("ايه") ||
+        lower.includes("ايوه") ||
+        lower.includes("ايوا") ||
+        lower.includes("نعم") ||
+        lower.includes("حولني") ||
+        lower.includes("طيب حولني")
+      ) {
+        waitingTransferConfirm[waId] = false;
+        humanOnly[waId] = true;
+
+        await sendWhatsAppMessage(
+          waId,
+          `تم تحويلك لخدمة العملاء في ${STORE_NAME} 👨‍💼، انتظر وسيتم الرد عليك يدويًا.`,
+          "system"
+        );
+
+        await notifyAgents(waId, text, customerName);
+        return res.sendStatus(200);
+      }
+
+      if (
+        lower.includes("لا") ||
+        lower.includes("خلاص") ||
+        lower.includes("مو لازم") ||
+        lower.includes("كمل انت")
+      ) {
+        waitingTransferConfirm[waId] = false;
+
+        await sendWhatsAppMessage(
+          waId,
+          "تمام، بكمل معك هنا كمساعد خدمة العملاء 😊",
+          "bot"
+        );
+        // ونكمل معالجة الرسالة عادة
+      }
+    }
+
+    // ========== طلب خدمة عملاء صريح ==========
+    if (
+      lower.includes("اكلم انسان") ||
+      lower.includes("ابي انسان") ||
+      lower.includes("خدمة عملاء") ||
+      lower.includes("خدمه عملاء") ||
+      lower.includes("موظف") ||
+      lower.includes("اكلم موظف")
+    ) {
+      humanOnly[waId] = true;
+      waitingTransferConfirm[waId] = false;
+
+      await sendWhatsAppMessage(
+        waId,
+        `تم تحويلك مباشرة لخدمة العملاء في ${STORE_NAME} 👨‍💼، انتظر وسيتم الرد عليك يدويًا.`,
+        "system"
+      );
+
+      await notifyAgents(waId, text, customerName);
+      return res.sendStatus(200);
+    }
+
+    // ========== في وضع خدمة عملاء فقط → لا يرد البوت ==========
+    if (humanOnly[waId]) {
+      addMessage(waId, "user", text);
+      console.log(`🙋‍♂️ ${waId} في وضع خدمة عملاء فقط، الموظف يرد من النظام.`);
+      return res.sendStatus(200);
+    }
+
+    // ========== لو البوت عالميًا مطفي ==========
+    if (!GLOBAL_BOT_ENABLED) {
+      addMessage(waId, "user", text);
+      console.log("⚪ البوت مطفي عالميًا، لا يتم الرد.");
+      return res.sendStatus(200);
+    }
+
+    // ========== لو العميل متضايق / ما فهم ==========
+    const frustrated =
+      lower.includes("ما فهمت") ||
+      lower.includes("مافهمت") ||
+      lower.includes("ما فهمتك") ||
+      lower.includes("غير واضح") ||
+      lower.includes("مو واضح") ||
+      lower.includes("غلط") ||
+      lower.includes("مو كذا") ||
+      lower.includes("ما فاد") ||
+      lower.includes("ما فادني") ||
+      lower.includes("ما استفدت") ||
+      lower.includes("مو مفيد") ||
+      lower.includes("هذا مو اللي ابيه");
+
+    if (frustrated) {
+      waitingTransferConfirm[waId] = true;
+
+      await sendWhatsAppMessage(
+        waId,
+        "يبدو إن الموضوع يحتاج متابعة من موظف خدمة العملاء 👨‍💼.\n" +
+          "تحب أنقلك لهم؟ إذا حاب رد بـ (ايه) أو (نعم)، وإذا تبي تكمل معي قل (لا).",
+        "bot"
+      );
+      return res.sendStatus(200);
+    }
+
+    // ========== رد طبيعي من OpenAI ==========
+    try {
+      const reply = await getAssistantReply(waId, text);
+      await sendWhatsAppMessage(waId, reply, "bot");
+    } catch (err) {
+      console.error("🔥 OpenAI ERROR:", err.response?.data || err.message);
+      await sendWhatsAppMessage(
+        waId,
+        "واجهتني مشكلة تقنية بسيطة أثناء إنشاء الرد 🤖، حاول تكتب رسالتك مرة ثانية أو بعد قليل.",
+        "error"
+      );
+    }
+
     return res.sendStatus(200);
-  } catch (error) {
-    console.error("🔥 WEBHOOK HANDLER ERROR:", error);
+  } catch (err) {
+    console.error("🔥 WEBHOOK HANDLER ERROR:", err.message);
     return res.sendStatus(500);
   }
 });
 
-// ------------ صفحة بسيطة (الرئيسية) -------------
+// ============ API بسيط لتشغيل/إيقاف البوت عالميًا ============
+
+// إيقاف البوت على الكل
+app.post("/api/bot/disable", (req, res) => {
+  GLOBAL_BOT_ENABLED = false;
+  console.log("⛔ تم إيقاف البوت عالميًا");
+  res.json({ ok: true, botEnabled: GLOBAL_BOT_ENABLED });
+});
+
+// تشغيل البوت على الكل
+app.post("/api/bot/enable", (req, res) => {
+  GLOBAL_BOT_ENABLED = true;
+  console.log("✅ تم تشغيل البوت عالميًا");
+  res.json({ ok: true, botEnabled: GLOBAL_BOT_ENABLED });
+});
+
+// صفحة بسيطة للتأكد
 app.get("/", (req, res) => {
-  res.send(
-    `<html lang="ar" dir="rtl">
-      <head>
-        <meta charset="utf-8" />
-        <title>WhatsApp AI Bot</title>
-      </head>
-      <body style="font-family: system-ui; background:#f5f7fb; padding:20px;">
-        <h2>البوت شغال ✅</h2>
-        <p><a href="/inbox" style="color:#0d9488; font-weight:bold;">🔔 فتح لوحة المحادثات (Inbox)</a></p>
-      </body>
-    </html>`
-  );
-});
-
-// ------------ API لبيانات الـ Inbox (تُحدَّث تلقائيًا) -------------
-app.get("/inbox/data", (req, res) => {
-  res.json({
-    conversations,
-    humanOnly,
-  });
-});
-
-// ------------ لوحة الـ Inbox + دردشة -------------
-app.get("/chats", (req, res) => {
-  const initial = JSON.stringify({ conversations, humanOnly });
-
   res.send(`
-<!DOCTYPE html>
-<html lang="ar" dir="rtl">
-<head>
-  <meta charset="utf-8" />
-  <title>لوحة محادثات واتساب - متجر الديم</title>
-  <style>
-    body {
-      margin: 0;
-      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      background: #0f172a;
-      color: #0f172a;
-    }
-    .layout {
-      display: flex;
-      height: 100vh;
-    }
-    .sidebar {
-      width: 280px;
-      background: #020617;
-      color: #e5e7eb;
-      border-left: 1px solid #1e293b;
-      display: flex;
-      flex-direction: column;
-    }
-    .sidebar-header {
-      padding: 16px;
-      border-bottom: 1px solid #1e293b;
-      font-weight: 700;
-      font-size: 18px;
-      display:flex;
-      align-items:center;
-      gap:8px;
-    }
-    .sidebar-header span.icon {
-      width:28px;
-      height:28px;
-      border-radius:999px;
-      background:#22c55e22;
-      display:flex;
-      align-items:center;
-      justify-content:center;
-      color:#22c55e;
-    }
-    .contact-list {
-      flex: 1;
-      overflow-y: auto;
-    }
-    .contact {
-      padding: 10px 14px;
-      cursor: pointer;
-      border-bottom: 1px solid #020617;
-      font-size: 14px;
-    }
-    .contact.active {
-      background: #0f172a;
-      color: #e5e7eb;
-    }
-    .contact small {
-      color: #64748b;
-      display:block;
-      margin-top:2px;
-      font-size:12px;
-    }
-
-    .chat {
-      flex: 1;
-      display:flex;
-      flex-direction:column;
-      background: radial-gradient(circle at top left,#0f172a,#020617);
-      color:#e5e7eb;
-    }
-    .chat-header {
-      padding: 14px 18px;
-      border-bottom: 1px solid #1e293b;
-      display:flex;
-      align-items:center;
-      justify-content:space-between;
-      gap: 12px;
-    }
-    .chat-header .title {
-      font-size: 16px;
-      font-weight: 600;
-    }
-    .chat-header .subtitle {
-      font-size: 12px;
-      color: #94a3b8;
-      margin-top:2px;
-    }
-    .chat-header-right {
-      display:flex;
-      flex-direction:column;
-      align-items:flex-end;
-      gap:4px;
-      font-size:12px;
-    }
-    .status-pill {
-      padding:3px 8px;
-      border-radius:999px;
-      border:1px solid #22c55e55;
-      color:#bbf7d0;
-      background:#16a34a22;
-    }
-    .status-pill.off {
-      border-color:#f9737355;
-      color:#fecaca;
-      background:#b91c1c22;
-    }
-    .small-note {
-      color:#94a3b8;
-      font-size:11px;
-    }
-    .btn-reset {
-      padding:4px 10px;
-      border-radius:999px;
-      border:none;
-      background:linear-gradient(135deg,#22c55e,#a3e635);
-      color:#022c22;
-      font-weight:600;
-      cursor:pointer;
-      font-size:11px;
-    }
-
-    .chat-messages {
-      flex:1;
-      padding: 16px;
-      overflow-y:auto;
-      display:flex;
-      flex-direction:column;
-      gap:8px;
-    }
-    .bubble-row {
-      display:flex;
-      margin-bottom:4px;
-    }
-    .bubble {
-      max-width: 70%;
-      padding: 8px 10px;
-      border-radius: 18px;
-      font-size: 14px;
-      line-height:1.4;
-      position:relative;
-    }
-    .from-user {
-      justify-content:flex-start;
-    }
-    .from-user .bubble {
-      background:#0ea5e9;
-      color:#f9fafb;
-      border-bottom-right-radius:4px;
-    }
-    .from-bot {
-      justify-content:flex-end;
-    }
-    .from-bot .bubble {
-      background:#22c55e;
-      color:#052e16;
-      border-bottom-left-radius:4px;
-    }
-    .from-agent {
-      justify-content:flex-end;
-    }
-    .from-agent .bubble {
-      background:#e5e7eb;
-      color:#020617;
-      border-bottom-left-radius:4px;
-      border:1px solid #cbd5f5;
-    }
-    .from-system {
-      justify-content:center;
-    }
-    .from-system .bubble {
-      background:#020617;
-      color:#e5e7eb;
-      border-radius:999px;
-      font-size:12px;
-      border:1px dashed #475569;
-    }
-    .time {
-      font-size:11px;
-      color:#cbd5f5;
-      margin-top:2px;
-      text-align:right;
-    }
-
-    .chat-input {
-      border-top: 1px solid #1e293b;
-      padding: 10px 14px;
-      display:flex;
-      gap:8px;
-      background:#020617;
-    }
-    .chat-input input[type="text"] {
-      flex:1;
-      padding:9px 10px;
-      border-radius:999px;
-      border:1px solid #334155;
-      background:#020617;
-      color:#e5e7eb;
-      outline:none;
-      font-size:14px;
-    }
-    .chat-input button {
-      padding: 9px 16px;
-      border-radius:999px;
-      border:none;
-      background:linear-gradient(135deg,#22c55e,#a3e635);
-      color:#022c22;
-      font-weight:600;
-      cursor:pointer;
-      font-size:14px;
-    }
-    .chat-input button:hover {
-      opacity:0.92;
-    }
-    .empty-state {
-      flex:1;
-      display:flex;
-      align-items:center;
-      justify-content:center;
-      color:#64748b;
-      font-size:14px;
-    }
-  </style>
-</head>
-<body>
-  <div class="layout">
-    <div class="sidebar">
-      <div class="sidebar-header">
-        <span class="icon">💬</span>
-        <div>
-          <div>محادثات واتساب</div>
-          <div style="font-size:11px;color:#64748b;">متجر الديم للمفارش</div>
-        </div>
-      </div>
-      <div id="contactList" class="contact-list"></div>
-    </div>
-
-    <div class="chat">
-      <div class="chat-header">
-        <div>
-          <div class="title" id="chatTitle">اختر عميل من القائمة</div>
-          <div class="subtitle" id="chatSubtitle">لن يتم حفظ أي بيانات في قاعدة بيانات، فقط في ذاكرة السيرفر.</div>
-        </div>
-        <div class="chat-header-right">
-          <div id="botStatus" class="status-pill off">البوت غير نشط</div>
-          <button id="botResetBtn" class="btn-reset" type="button">إعادة تشغيل البوت 🤖</button>
-          <div class="small-note">إذا العميل قال: "ابي اكلم انسان" يتم إيقاف البوت لهذا الرقم.</div>
-        </div>
-      </div>
-      <div id="chatMessages" class="chat-messages">
-        <div class="empty-state">لا توجد محادثة محددة حتى الآن.</div>
-      </div>
-      <form id="agentForm" class="chat-input">
-        <input type="hidden" id="wa_id" name="wa_id" />
-        <input type="text" id="agentText" name="text" placeholder="اكتب ردك كموظف من متجر الديم..." autocomplete="off" />
-        <button type="submit">إرسال ✅</button>
-      </form>
-    </div>
-  </div>
-
-  <script>
-    const initialData = ${initial};
-    let conversations = initialData.conversations || {};
-    let humanOnly = initialData.humanOnly || {};
-
-    const contactListEl = document.getElementById("contactList");
-    const chatMessagesEl = document.getElementById("chatMessages");
-    const chatTitleEl = document.getElementById("chatTitle");
-    const chatSubtitleEl = document.getElementById("chatSubtitle");
-    const waIdInput = document.getElementById("wa_id");
-    const agentForm = document.getElementById("agentForm");
-    const agentTextInput = document.getElementById("agentText");
-    const botStatusEl = document.getElementById("botStatus");
-    const botResetBtn = document.getElementById("botResetBtn");
-
-    let currentWaId = null;
-
-    function renderContacts() {
-      contactListEl.innerHTML = "";
-      const ids = Object.keys(conversations);
-      if (!ids.length) {
-        contactListEl.innerHTML = '<div class="contact">لا توجد محادثات حتى الآن.</div>';
-        return;
-      }
-      ids.forEach((id) => {
-        const msgs = conversations[id] || [];
-        const last = msgs[msgs.length - 1];
-        const div = document.createElement("div");
-        div.className = "contact" + (currentWaId === id ? " active" : "");
-        div.dataset.waId = id;
-        div.innerHTML = "<strong>" + id + "</strong>" + 
-          (last ? "<small>" + last.text.slice(0,40) + "</small>" : "");
-        div.onclick = () => {
-          currentWaId = id;
-          renderContacts();
-          renderChat();
-        };
-        contactListEl.appendChild(div);
-      });
-    }
-
-    function renderChat() {
-      if (!currentWaId) {
-        chatTitleEl.textContent = "اختر عميل من القائمة";
-        chatSubtitleEl.textContent = "سيتم عرض المحادثة هنا.";
-        botStatusEl.textContent = "البوت غير نشط";
-        botStatusEl.classList.add("off");
-        chatMessagesEl.innerHTML = '<div class="empty-state">لا توجد محادثة محددة حتى الآن.</div>';
-        waIdInput.value = "";
-        return;
-      }
-      const msgs = conversations[currentWaId] || [];
-      chatTitleEl.textContent = "العميل: " + currentWaId;
-      chatSubtitleEl.textContent = "عدد الرسائل: " + msgs.length;
-      waIdInput.value = currentWaId;
-
-      const isHumanOnly = !!humanOnly[currentWaId];
-      if (isHumanOnly) {
-        botStatusEl.textContent = "البوت متوقف (وضع موظف فقط)";
-        botStatusEl.classList.add("off");
-      } else {
-        botStatusEl.textContent = "البوت نشط لهذا الرقم";
-        botStatusEl.classList.remove("off");
-      }
-
-      chatMessagesEl.innerHTML = "";
-      msgs.forEach((m) => {
-        const row = document.createElement("div");
-        let cls = "from-user";
-        if (m.from === "bot") cls = "from-bot";
-        if (m.from === "agent") cls = "from-agent";
-        if (m.from === "system") cls = "from-system";
-
-        row.className = "bubble-row " + cls;
-        row.innerHTML = '<div><div class="bubble">' + m.text + '</div><div class="time">' + (m.time || "") + '</div></div>';
-        chatMessagesEl.appendChild(row);
-      });
-
-      chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
-    }
-
-    agentForm.addEventListener("submit", async (e) => {
-      e.preventDefault();
-      const waId = waIdInput.value.trim();
-      const text = agentTextInput.value.trim();
-      if (!waId || !text) return;
-
-      try {
-        await fetch("/agent/send", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ wa_id: waId, text }),
-        });
-        if (!conversations[waId]) conversations[waId] = [];
-        conversations[waId].push({
-          from: "agent",
-          text,
-          time: new Date().toLocaleTimeString("ar-SA", {hour:"2-digit",minute:"2-digit"})
-        });
-        agentTextInput.value = "";
-        renderChat();
-      } catch (err) {
-        alert("حدث خطأ في الإرسال");
-      }
-    });
-
-    botResetBtn.addEventListener("click", async () => {
-      if (!currentWaId) return;
-      try {
-        await fetch("/agent/bot-reset", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ wa_id: currentWaId }),
-        });
-        humanOnly[currentWaId] = false;
-        // نضيف رسالة سيستم محلياً
-        if (!conversations[currentWaId]) conversations[currentWaId] = [];
-        conversations[currentWaId].push({
-          from: "system",
-          text: "تم إعادة تشغيل البوت لهذا العميل.",
-          time: new Date().toLocaleTimeString("ar-SA", {hour:"2-digit",minute:"2-digit"})
-        });
-        renderChat();
-      } catch (err) {
-        alert("تعذّر إعادة تشغيل البوت.");
-      }
-    });
-
-    // تحديث تلقائي كل 3 ثواني
-    async function refreshData() {
-      try {
-        const res = await fetch("/inbox/data");
-        const data = await res.json();
-        conversations = data.conversations || {};
-        humanOnly = data.humanOnly || {};
-        renderContacts();
-        renderChat();
-      } catch (e) {
-        console.error("خطأ في التحديث التلقائي", e);
-      }
-    }
-
-    renderContacts();
-    renderChat();
-    setInterval(refreshData, 3000);
-  </script>
-</body>
-</html>
-`);
+    <html dir="rtl" lang="ar">
+      <head><meta charset="utf-8" /><title>${STORE_NAME} - بوت الواتساب</title></head>
+      <body style="font-family: system-ui; background:#f4f4f5; padding:20px;">
+        <h2>بوت واتساب لـ ${STORE_NAME} شغال ✅</h2>
+        <p>اسم البوت الحالي: <b>${BOT_NAME}</b></p>
+        <p>رابط المتجر المستخدم في الردود: <a href="${STORE_URL}" target="_blank">${STORE_URL}</a></p>
+        <p>حالة البوت العامة: <b>${GLOBAL_BOT_ENABLED ? "مفعّل" : "متوقف"}</b></p>
+        <hr />
+        <p>لتغيير الاسم أو الرابط، عدّل القيم في أعلى ملف <code>server.js</code>:</p>
+        <pre>
+const STORE_NAME = "${STORE_NAME}";
+const STORE_URL  = "${STORE_URL}";
+        </pre>
+      </body>
+    </html>
+  `);
 });
 
-// ------------ Endpoint إرسال من الموظف -------------
-app.post("/agent/send", async (req, res) => {
-  const { wa_id, text } = req.body || {};
-  if (!wa_id || !text) return res.status(400).json({ ok: false });
-
-  await sendWhatsAppMessage(wa_id, text, "agent");
-  return res.json({ ok: true });
-});
-
-// ------------ Endpoint إعادة تشغيل البوت -------------
-app.post("/agent/bot-reset", async (req, res) => {
-  const { wa_id } = req.body || {};
-  if (!wa_id) return res.status(400).json({ ok: false });
-
-  humanOnly[wa_id] = false;
-  await sendWhatsAppMessage(
-    wa_id,
-    "تم إعادة تشغيل البوت لمتجر الديم 🤖، تقدر تكتب سؤالك الآن.",
-    "system"
-  );
-  return res.json({ ok: true });
-});
-
-// ------------ تشغيل السيرفر -------------
+// تشغيل السيرفر
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
