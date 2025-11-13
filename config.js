@@ -15,6 +15,19 @@ export default {
     // WhatsApp Business Account ID
     WABA_ID: "1325564105512012",
 
-    // OpenAI Key من Environment فقط
-    OPENAI_API_KEY: process.env.OPENAI_API_KEY
+ STORE_NAME: "جمعية تنمية المواهب",
+
+  // رابط المتجر (إذا طلبه العميل)
+  STORE_URL: "",
+
+  // رابط السيرفر (دومين Render أو غيره)
+  PANEL_BASE_URL: "https://a1-9b9e.onrender.com",
+
+  // أرقام خدمة العملاء اللي تجيهم رسالة إذا تم تحويل عميل (بدون +)
+  AGENT_NUMBERS: [
+    // مثال:
+    "0554986089",
+  ],
 };
+
+export default config;
