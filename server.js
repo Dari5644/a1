@@ -227,7 +227,7 @@ app.get("/inbox/data", (req, res) => {
 });
 
 // ------------ لوحة الـ Inbox + دردشة -------------
-app.get("/inbox", (req, res) => {
+app.get("/chats", (req, res) => {
   const initial = JSON.stringify({ conversations, humanOnly });
 
   res.send(`
