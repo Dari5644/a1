@@ -1,159 +1,145 @@
-// server.js  (ES Module)
+// ========================
+//  WhatsApp + OpenAI Bot
+//  server.js — ES Modules
+// ========================
 
-// نستعمل import بدل require
 import express from "express";
-import bodyParser from "body-parser";
+import axios from "axios";
 import OpenAI from "openai";
 
-const app = express();
-const PORT = process.env.PORT || 10000;
+// ------------------------
+//  التوكنات اللي انت عطيتني اياها
+// ------------------------
+const PORT = 3000;
+const VERIFY_TOKEN = "mawaheb_verify";
 
-// نقرأ المتغيّرات من البيئة (من لوحة Render)
-const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;   // توكن واتساب من Meta
-const OPENAI_API_KEY = "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";   // مفتاح OpenAI
-const VERIFY_TOKEN = "mawaheb_verify";       // mawaheb_verify مثلاً
+const WABA_TOKEN =
+  "EAAMlJZBsLvHQBP430JnAZA3a1ymKksXew7rsERa7fYzFQKoUehqIDPqNwYoVg3RIC6OwQGd3ZA2K7ZBEn390s1SeP5Gvbs1Wi3B75UPyEYT1gKs2Sae5w0emCo7L9EqeE6ktDNFjsqZAcBnnsBFdZA8qZAI73c7jthFxFvLiMXnZC2nZBNoIgc0InxBuI5SefnAZDZD";
 
-// تهيئة OpenAI
+const PHONE_ID = "0561340876"; // ⚠️ هذا رقم جوال، المفروض Phone Number ID يكون رقم طويل من Meta مثل 1234567890
+const WABA_ID = "1325564105512012";
+
+const OPENAI_API_KEY =
+  "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";
+
+// ------------------------
+//  تهيئة OpenAI
+// ------------------------
 const openai = new OpenAI({
   apiKey: OPENAI_API_KEY,
 });
 
-// حتى يقرأ JSON من Webhook
-app.use(bodyParser.json());
+// ------------------------
+// دالة الذكاء الاصطناعي
+// ------------------------
+async function getAIReply(message) {
+  try {
+    const response = await openai.responses.create({
+      model: "gpt-4o-mini",
+      input: [
+        {
+          role: "user",
+          content: message,
+        },
+      ],
+    });
 
-/**
- * GET /webhook
- * هذا الراوت يستخدمه فيسبوك للتحقق من الـ VERIFY_TOKEN أول مرة
- */
+    return response.output[0].content[0].text;
+  } catch (err) {
+    console.error("🔥 OpenAI ERROR:", err.response?.data || err.message);
+    return "صار عندي خطأ تقني وأنا أحاول أفهم رسالتك، جرّب مرة ثانية 🙏";
+  }
+}
+
+// ------------------------
+// إرسال رسالة واتساب
+// ------------------------
+async function sendWhatsAppMessage(to, text) {
+  try {
+    const url = `https://graph.facebook.com/v21.0/${PHONE_ID}/messages`;
+
+    await axios.post(
+      url,
+      {
+        messaging_product: "whatsapp",
+        to,
+        type: "text",
+        text: { body: text },
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${WABA_TOKEN}`,
+          "Content-Type": "application/json",
+        },
+      }
+    );
+
+    console.log("📤 Message sent:", to);
+  } catch (err) {
+    console.error("🔥 WhatsApp SEND ERROR:", err.response?.data || err.message);
+  }
+}
+
+// ------------------------
+// GET — التحقق من Webhook
+// ------------------------
+const app = express();
+app.use(express.json());
+
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
 
   if (mode === "subscribe" && token === VERIFY_TOKEN) {
-    console.log("WEBHOOK_VERIFIED");
+    console.log("✅ WEBHOOK_VERIFIED");
     return res.status(200).send(challenge);
+  } else {
+    console.log("❌ WEBHOOK_VERIFICATION_FAILED");
+    return res.sendStatus(403);
   }
-
-  console.log("WEBHOOK_VERIFICATION_FAILED");
-  return res.sendStatus(403);
 });
 
-/**
- * POST /webhook
- * هنا تجينا رسائل الواتساب الفعلية
- */
+// ------------------------
+// POST — استقبال رسائل واتساب
+// ------------------------
 app.post("/webhook", async (req, res) => {
-  try {
-    const body = req.body;
+  console.log("📩 Incoming:", JSON.stringify(req.body, null, 2));
 
-    // لو ما فيه رسائل، رجّع OK بس
-    if (
-      !body?.entry ||
-      !body.entry[0]?.changes ||
-      !body.entry[0].changes[0]?.value?.messages
-    ) {
+  try {
+    const entry = req.body.entry?.[0];
+    const changes = entry?.changes?.[0];
+    const value = changes?.value;
+    const message = value?.messages?.[0];
+
+    if (!message || message.type !== "text") {
       return res.sendStatus(200);
     }
 
-    const entry = body.entry[0];
-    const changes = entry.changes[0];
-    const value = changes.value;
-    const messages = value.messages;
-    const metadata = value.metadata;
+    const from = message.from;
+    const text = message.text.body;
 
-    const msg = messages[0];
-    const from = msg.from; // رقم الشخص اللي أرسل
-    const text = msg.text?.body || "";
+    console.log("👤 From:", from);
+    console.log("💬 Text:", text);
 
-    const phoneNumberId = metadata.phone_number_id; // ID رقم الواتساب التجاري
+    const reply = await getAIReply(text);
 
-    console.log("📩 رسالة من:", from, "النص:", text);
+    await sendWhatsAppMessage(from, reply);
 
-    // نرسل النص لـ OpenAI ونجيب رد ذكي
-    const replyText = await generateAIReply(text);
-
-    // نرسل الرد للواتساب
-    await sendWhatsAppMessage(phoneNumberId, from, replyText);
-
-    // لازم نرجّع 200 لواتساب
     res.sendStatus(200);
   } catch (err) {
-    console.error("❌ Error in /webhook:", err);
+    console.error("🔥 WEBHOOK ERROR:", err);
     res.sendStatus(500);
   }
 });
 
-/**
- * دالة تتصل بـ OpenAI وترجع رد
- */
-async function generateAIReply(userText) {
-  try {
-    if (!OPENAI_API_KEY) {
-      console.warn("⚠️ OPENAI_API_KEY غير موجود في Environment");
-      return "عذرًا، الخدمة غير مفعّلة حاليًا.";
-    }
-
-    const completion = await openai.responses.create({
-      model: "gpt-4.1-mini",
-      input: [
-        {
-          role: "system",
-          content:
-            "أنت بوت واتساب ذكي، تجاوب باختصار وبأسلوب لطيف باللغة العربية.",
-        },
-        {
-          role: "user",
-          content: userText || "مرحبا",
-        },
-      ],
-      max_output_tokens: 200,
-    });
-
-    const answer =
-      completion.output[0].content[0].text || "لم أفهم سؤالك، حاول صياغته بشكل أوضح.";
-    return answer;
-  } catch (err) {
-    console.error("❌ Error calling OpenAI:", err);
-    return "واجهتني مشكلة أثناء معالجة سؤالك، حاول لاحقًا.";
-  }
-}
-
-/**
- * دالة إرسال رسالة واتساب عبر Graph API
- */
-async function sendWhatsAppMessage(phoneNumberId, to, text) {
-  if (!WHATSAPP_TOKEN) {
-    console.error("❌ WHATSAPP_TOKEN غير موجود في Environment");
-    return;
-  }
-
-  const url = `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`;
-
-  const payload = {
-    messaging_product: "whatsapp",
-    to,
-    text: { body: text },
-  };
-
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${WHATSAPP_TOKEN}`,
-    },
-    body: JSON.stringify(payload),
-  });
-
-  const data = await res.json();
-  console.log("📤 WhatsApp response:", data);
-
-  if (!res.ok) {
-    console.error("❌ Error sending WhatsApp message:", data);
-  }
-}
-
+// ------------------------
 // تشغيل السيرفر
+// ------------------------
+app.get("/", (req, res) => {
+  res.send("WhatsApp AI Bot is running 🚀");
+});
+
 app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`🚀 Server running on PORT ${PORT}`);
 });
