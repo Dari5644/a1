@@ -11,7 +11,7 @@ const PORT = process.env.PORT || 10000;
 // نقرأ المتغيّرات من البيئة (من لوحة Render)
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;   // توكن واتساب من Meta
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;   // مفتاح OpenAI
-const VERIFY_TOKEN = process.env.VERIFY_TOKEN;       // mawaheb_verify مثلاً
+const VERIFY_TOKEN = "mawaheb_verify";       // mawaheb_verify مثلاً
 
 // تهيئة OpenAI
 const openai = new OpenAI({
