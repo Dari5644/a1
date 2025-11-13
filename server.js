@@ -1,5 +1,5 @@
 // server.js
-// بوت واتساب + OpenAI + تسجيل دخول مالك/موظفين + لوحتين تواصل + بلوك/إزالة/برودكاست
+// بوت واتساب + OpenAI + تسجيل دخول مالك/موظفين + لوحتين تواصل + بلوك/إزالة/برودكاست + رفع ملف أرقام
 
 import express from "express";
 import axios from "axios";
@@ -28,16 +28,43 @@ const {
 // مفتاح OpenAI في .env فقط
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 if (!OPENAI_API_KEY) console.warn("⚠️ OPENAI_API_KEY مفقود في env");
-if (!WABA_TOKEN || !PHONE_ID) console.warn("⚠️ تأكد من WABA_TOKEN و PHONE_ID في config.js");
+if (!WABA_TOKEN || !PHONE_ID)
+  console.warn("⚠️ تأكد من WABA_TOKEN و PHONE_ID في config.js");
 
 const BOT_NAME = "مساعد " + STORE_NAME;
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
-// ======== تخزين داخلي (بدون قاعدة بيانات) =========
+// ====== دالة لتنسيق أرقام الجوال ======
+// تستقبل: 05xxxxxxxx أو 9665xxxxxxxx أو أي شكل وفي النهاية تحاول تعطي 9665xxxxxxxx
+function normalizePhone(raw) {
+  if (!raw) return null;
+  let digits = String(raw).replace(/\D/g, "");
+
+  // لو بصيغة محلية 05xxxxxxxx
+  if (digits.startsWith("05") && digits.length === 10) {
+    return "966" + digits.slice(1); // 9665xxxxxxxx
+  }
+
+  // لو بصيغة دولية صحيحة
+  if (digits.startsWith("9665") && digits.length === 12) {
+    return digits;
+  }
+
+  // لو 5xxxxxxxx (بدون 0)
+  if (digits.startsWith("5") && digits.length === 9) {
+    return "966" + digits;
+  }
+
+  // غير متوقع، نرجعه كما هو لو كان طوله معقول
+  if (digits.length >= 8) return digits;
+  return null;
+}
+
+// ======== تخزين داخلي =========
 
 // المستخدمين (مالك + موظفين)
-const users = {};        // key: email → {id, name, email, password, role, whatsapp, canBroadcast}
-const sessions = {};     // sessionId → { userId }
+const users = {}; // key: email → {id, name, email, password, role, whatsapp, canBroadcast}
+const sessions = {}; // sessionId → { userId }
 
 // إنشاء المالك
 const ownerId = "owner-" + Date.now();
@@ -52,10 +79,10 @@ users[OWNER_EMAIL] = {
 };
 
 // المحادثات
-const conversations = {};          // waId → [ {from,text,time,agentName?,agentEmail?} ]
-const humanOnly = {};              // waId → true/false
+const conversations = {}; // waId → [ {from,text,time,agentName?,agentEmail?} ]
+const humanOnly = {}; // waId → true/false
 const waitingTransferConfirm = {}; // waId → true/false
-const blocked = {};                // waId → true/false
+const blocked = {}; // waId → true/false
 
 // ====== أدوات عامة ======
 function addMessage(waId, from, text, meta = {}) {
@@ -74,7 +101,6 @@ function addMessage(waId, from, text, meta = {}) {
   }
 }
 
-// parse cookies
 function parseCookies(req) {
   const header = req.headers.cookie;
   const cookies = {};
@@ -130,7 +156,7 @@ async function sendWhatsAppMessage(to, text, tag = "bot", meta = {}) {
       },
     });
 
-    // نسجل الرسالة في المحادثة (بدون تكرار للبوت)
+    // نسجل الرسالة في المحادثة
     if (tag === "bot") {
       addMessage(to, "bot", text);
     } else if (tag === "agent") {
@@ -145,16 +171,16 @@ async function sendWhatsAppMessage(to, text, tag = "bot", meta = {}) {
   }
 }
 
-// تنبيه الموظفين (المالك + أي موظف له رقم واتساب ويحق له تنبيهات)
+// تنبيه الموظفين عند طلب خدمة العملاء
 async function notifyAgents(waId, lastText, customerName) {
   const link = `${PANEL_BASE_URL}/inbox-a?wa=${waId}`;
 
   const msg =
-    `🚨 عميل تم تحويله إلى خدمة العملاء في ${STORE_NAME}.\n\n` +
+    `🚨 عميل طلب خدمة العملاء الآن في ${STORE_NAME}.\n\n` +
     `👤 الاسم: ${customerName || "عميل"}\n` +
     `📞 الرقم: ${waId}\n\n` +
     `💬 آخر رسالة من العميل:\n${lastText}\n\n` +
-    `🧷 افتح المحادثة من هنا:\n${link}`;
+    `🧷 افتح المحادثة مباشرة من هنا:\n${link}`;
 
   for (const u of Object.values(users)) {
     if (u.whatsapp && u.canBroadcast !== false) {
@@ -209,7 +235,7 @@ async function getAssistantReply(waId, userText) {
   return reply;
 }
 
-// ========== WEBHOOK GET (التحقق من Meta) ==========
+// ========== WEBHOOK GET ==========
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
@@ -223,7 +249,7 @@ app.get("/webhook", (req, res) => {
   return res.sendStatus(403);
 });
 
-// ========== WEBHOOK POST (رسائل واتساب) ==========
+// ========== WEBHOOK POST ==========
 app.post("/webhook", async (req, res) => {
   const body = req.body;
   console.log("📩 Incoming:", JSON.stringify(body, null, 2));
@@ -380,7 +406,7 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-// ========== API للمحادثات للوحة الموظفين ==========
+// ========== API للمحادثات ==========
 app.get("/api/conversations", (req, res) => {
   const data = {
     storeName: STORE_NAME,
@@ -391,13 +417,14 @@ app.get("/api/conversations", (req, res) => {
   res.json(data);
 });
 
-// إرسال رد من موظف (يلزم تسجيل دخول)
+// إرسال رد من موظف
 app.post("/api/agent/send", (req, res) => {
   const user = getUserFromSession(req);
   if (!user) return res.status(401).json({ ok: false, error: "unauthorized" });
 
   const { wa_id, text } = req.body || {};
-  if (!wa_id || !text) return res.status(400).json({ ok: false, error: "missing" });
+  if (!wa_id || !text)
+    return res.status(400).json({ ok: false, error: "missing" });
 
   sendWhatsAppMessage(wa_id, text, "agent", {
     agentName: user.name,
@@ -406,7 +433,7 @@ app.post("/api/agent/send", (req, res) => {
   res.json({ ok: true });
 });
 
-// إيقاف البوت لهذا العميل
+// إيقاف/تشغيل البوت/بلوك/إزالة/حذف
 app.post("/api/agent/bot-stop", (req, res) => {
   const user = getUserFromSession(req);
   if (!user) return res.status(401).json({ ok: false });
@@ -418,7 +445,6 @@ app.post("/api/agent/bot-stop", (req, res) => {
   res.json({ ok: true });
 });
 
-// إعادة تشغيل البوت لهذا العميل
 app.post("/api/agent/bot-reset", (req, res) => {
   const user = getUserFromSession(req);
   if (!user) return res.status(401).json({ ok: false });
@@ -431,7 +457,6 @@ app.post("/api/agent/bot-reset", (req, res) => {
   res.json({ ok: true });
 });
 
-// بلوك / إلغاء بلوك / حذف محادثة
 app.post("/api/agent/block", (req, res) => {
   const user = getUserFromSession(req);
   if (!user) return res.status(401).json({ ok: false });
@@ -469,8 +494,6 @@ app.post("/api/agent/delete", (req, res) => {
 });
 
 // ========== تسجيل الدخول ==========
-
-// صفحة تسجيل الدخول (مالك + موظفين)
 app.get("/login", (req, res) => {
   res.send(`
 <!DOCTYPE html>
@@ -533,7 +556,6 @@ app.get("/login", (req, res) => {
   `);
 });
 
-// معالجة تسجيل الدخول
 app.post("/login", (req, res) => {
   const { email, password } = req.body || {};
   if (!email || !password) {
@@ -553,12 +575,10 @@ app.post("/login", (req, res) => {
     `sid=${encodeURIComponent(sid)}; HttpOnly; Path=/; SameSite=Lax`
   );
 
-  // المالك → لوحة المالك /owner ، الموظف → /inbox-a
   const redirect = u.role === "owner" ? "/owner" : "/inbox-a";
   res.json({ ok: true, redirect });
 });
 
-// تسجيل الخروج
 app.get("/logout", (req, res) => {
   const cookies = parseCookies(req);
   const sid = cookies.sid;
@@ -568,11 +588,13 @@ app.get("/logout", (req, res) => {
 });
 
 // ========== لوحة المالك ==========
-
 app.get(
   "/owner",
   requireLogin((req, res) => {
     const user = req.user;
+    if (user.role !== "owner") {
+      return res.status(403).send("هذه الصفحة خاصة بالمالك فقط.");
+    }
     res.send(`
 <!DOCTYPE html>
 <html lang="ar" dir="rtl">
@@ -596,7 +618,6 @@ app.get(
     .btn-danger { background:linear-gradient(135deg,#ef4444,#f97316); color:#fff; }
     .list { margin-top:8px; max-height:150px; overflow-y:auto; font-size:11px; }
     .row { padding:4px 0; border-bottom:1px solid #111827; display:flex; justify-content:space-between; align-items:center; gap:4px; }
-    .tag { padding:1px 6px; border-radius:999px; background:#1d283a; font-size:10px; color:#e5e7eb; }
     .danger-link { color:#fca5a5; cursor:pointer; font-size:11px; }
     small { color:#9ca3af; font-size:10px; display:block; margin-top:2px; }
   </style>
@@ -625,8 +646,8 @@ app.get(
         <input type="email" id="agentEmail" required />
         <label>كلمة المرور</label>
         <input type="text" id="agentPassword" required />
-        <label>رقم واتساب الموظف (بدون +)</label>
-        <input type="text" id="agentWhatsapp" placeholder="مثال: 9665xxxxxxx" />
+        <label>رقم واتساب الموظف (يبدأ بـ 05)</label>
+        <input type="text" id="agentWhatsapp" placeholder="مثال: 05xxxxxxxx" />
         <label>صلاحيات</label>
         <select id="agentBroadcast">
           <option value="1">يستقبل تنبيهات و يرسل رسائل جماعية</option>
@@ -641,12 +662,12 @@ app.get(
     <div class="card">
       <h3>إنشاء محادثة فردية</h3>
       <form id="startChatForm">
-        <label>رقم واتساب العميل (بدون +)</label>
-        <input type="text" id="chatWa" placeholder="مثال: 9665xxxxxxx" required />
+        <label>رقم واتساب العميل (يبدأ بـ 05)</label>
+        <input type="text" id="chatWa" placeholder="مثال: 05xxxxxxxx" required />
         <label>الرسالة الأولى</label>
         <textarea id="chatText" placeholder="نص الرسالة..."></textarea>
         <button type="submit" class="btn-primary">إرسال رسالة</button>
-        <small>سيتم إيقاف البوت مؤقتًا إذا رغبت لاحقًا من لوحة الموظفين.</small>
+        <small>الرقم يجب أن يكون بالشكل 05xxxxxxxx، وسيتم تحويله تلقائيًا لصيغة واتساب.</small>
       </form>
     </div>
 
@@ -654,17 +675,21 @@ app.get(
     <div class="card">
       <h3>رسائل جماعية</h3>
       <form id="broadcastForm">
-        <label>الأرقام (كل رقم في سطر)</label>
-        <textarea id="broadcastNumbers" placeholder="9665xxxxxxx\n9665yyyyyyy"></textarea>
+        <label>الأرقام يدويًا (كل رقم في سطر أو مفصولة بمسافة)</label>
+        <textarea id="broadcastNumbers" placeholder="05xxxxxxxx\n05yyyyyyyy"></textarea>
+        <label>أو ملف أرقام (.txt / .csv)</label>
+        <input type="file" id="broadcastFile" accept=".txt,.csv" />
         <label>نص الرسالة</label>
         <textarea id="broadcastText" placeholder="نص الرسالة..."></textarea>
         <button type="submit" class="btn-primary">إرسال جماعي</button>
-        <small>تأكد من موافقة الأنظمة على الإرسال الجماعي وتجنّب الإزعاج.</small>
+        <small>كل رقم يجب أن يبدأ بـ 05، وسيتم تحويله تلقائيًا لـ 9665... قبل الإرسال.</small>
       </form>
     </div>
   </div>
 
   <script>
+    let broadcastFileContent = "";
+
     async function loadAgents() {
       const res = await fetch("/api/owner/agents");
       const data = await res.json();
@@ -694,6 +719,19 @@ app.get(
         list.appendChild(row);
       });
     }
+
+    document.getElementById("broadcastFile").addEventListener("change", (e) => {
+      const file = e.target.files[0];
+      if (!file) {
+        broadcastFileContent = "";
+        return;
+      }
+      const reader = new FileReader();
+      reader.onload = () => {
+        broadcastFileContent = reader.result || "";
+      };
+      reader.readAsText(file, "utf-8");
+    });
 
     document.getElementById("addAgentForm").addEventListener("submit", async (e) => {
       e.preventDefault();
@@ -733,12 +771,15 @@ app.get(
       e.preventDefault();
       const numsRaw = document.getElementById("broadcastNumbers").value.trim();
       const text = document.getElementById("broadcastText").value.trim();
-      if(!numsRaw || !text) return alert("أدخل الأرقام والنص");
-      const numbers = numsRaw.split(/\\s+/).filter(Boolean);
+      if(!text) return alert("أدخل نص الرسالة");
       await fetch("/api/owner/broadcast", {
         method:"POST",
         headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({numbers,text})
+        body:JSON.stringify({
+          numbersText: numsRaw,
+          fileContent: broadcastFileContent,
+          text
+        })
       });
       alert("تم إرسال الرسائل الجماعية (قد يستغرق التنفيذ قليلاً).");
     });
@@ -752,10 +793,11 @@ app.get(
 );
 
 // ========== API إدارة الموظفين / المالك ==========
-
 app.get(
   "/api/owner/agents",
   requireLogin((req, res) => {
+    if (req.user.role !== "owner")
+      return res.status(403).json({ ok: false, error: "forbidden" });
     const agents = Object.values(users).filter((u) => u.role === "agent");
     res.json({ agents });
   }, "owner")
@@ -764,6 +806,9 @@ app.get(
 app.post(
   "/api/owner/agents/add",
   requireLogin((req, res) => {
+    if (req.user.role !== "owner")
+      return res.status(403).json({ ok: false, error: "forbidden" });
+
     const { name, email, password, whatsapp, canBroadcast } = req.body || {};
     if (!name || !email || !password) {
       return res.status(400).json({ ok: false });
@@ -772,13 +817,14 @@ app.post(
       return res.json({ ok: false, error: "الموظف موجود مسبقًا" });
     }
     const id = "agent-" + Date.now() + "-" + Math.floor(Math.random() * 9999);
+    const normalizedWhatsapp = whatsapp ? normalizePhone(whatsapp) : null;
     users[email] = {
       id,
       name,
       email,
       password,
       role: "agent",
-      whatsapp: whatsapp || null,
+      whatsapp: normalizedWhatsapp,
       canBroadcast: !!canBroadcast,
     };
     res.json({ ok: true });
@@ -788,6 +834,8 @@ app.post(
 app.post(
   "/api/owner/agents/delete",
   requireLogin((req, res) => {
+    if (req.user.role !== "owner")
+      return res.status(403).json({ ok: false, error: "forbidden" });
     const { email } = req.body || {};
     if (!email || !users[email] || users[email].role !== "agent") {
       return res.status(400).json({ ok: false });
@@ -801,14 +849,23 @@ app.post(
 app.post(
   "/api/owner/start-chat",
   requireLogin((req, res) => {
+    if (req.user.role !== "owner")
+      return res.status(403).json({ ok: false, error: "forbidden" });
+
     const user = req.user;
     const { wa_id, text } = req.body || {};
     if (!wa_id || !text) return res.status(400).json({ ok: false });
-    addMessage(wa_id, "agent", text, {
+    const normalized = normalizePhone(wa_id);
+    if (!normalized) {
+      return res
+        .status(400)
+        .json({ ok: false, error: "رقم غير صحيح، استخدم 05xxxxxxxx" });
+    }
+    addMessage(normalized, "agent", text, {
       agentName: user.name,
       agentEmail: user.email,
     });
-    sendWhatsAppMessage(wa_id, text, "agent", {
+    sendWhatsAppMessage(normalized, text, "agent", {
       agentName: user.name,
       agentEmail: user.email,
     });
@@ -816,38 +873,69 @@ app.post(
   }, "owner")
 );
 
-// إرسال جماعي من المالك أو موظف له صلاحية
+// إرسال جماعي (من المالك أو موظف له صلاحية)
 app.post("/api/owner/broadcast", (req, res) => {
   const user = getUserFromSession(req);
   if (!user) return res.status(401).json({ ok: false });
   if (user.role !== "owner" && !user.canBroadcast) {
-    return res.status(403).json({ ok: false, error: "لا تملك صلاحية الإرسال الجماعي" });
+    return res
+      .status(403)
+      .json({ ok: false, error: "لا تملك صلاحية الإرسال الجماعي" });
   }
-  const { numbers, text } = req.body || {};
-  if (!Array.isArray(numbers) || !numbers.length || !text) {
-    return res.status(400).json({ ok: false, error: "بيانات ناقصة" });
+  const { numbersText, fileContent, text } = req.body || {};
+  if (!text) {
+    return res
+      .status(400)
+      .json({ ok: false, error: "لابد من نص الرسالة" });
   }
 
-  numbers.forEach((wa) => {
-    const num = String(wa).trim();
-    if (!num) return;
-    addMessage(num, "agent", text, {
+  let rawNumbers = [];
+
+  if (numbersText && numbersText.trim()) {
+    rawNumbers = rawNumbers.concat(numbersText.split(/\s+/));
+  }
+
+  if (fileContent && fileContent.trim()) {
+    // نفصل على سطور أو فواصل أو مسافات
+    rawNumbers = rawNumbers.concat(fileContent.split(/[\s,;]+/));
+  }
+
+  const normalizedSet = new Set();
+  const finalNumbers = [];
+
+  rawNumbers.forEach((n) => {
+    const norm = normalizePhone(n);
+    if (norm && !normalizedSet.has(norm)) {
+      normalizedSet.add(norm);
+      finalNumbers.push(norm);
+    }
+  });
+
+  if (!finalNumbers.length) {
+    return res
+      .status(400)
+      .json({ ok: false, error: "لم يتم العثور على أرقام صالحة" });
+  }
+
+  finalNumbers.forEach((wa) => {
+    addMessage(wa, "agent", text, {
       agentName: user.name,
       agentEmail: user.email,
     });
-    sendWhatsAppMessage(num, text, "agent", {
+    sendWhatsAppMessage(wa, text, "agent", {
       agentName: user.name,
       agentEmail: user.email,
     });
   });
 
-  res.json({ ok: true });
+  res.json({ ok: true, count: finalNumbers.length });
 });
 
 // ========== الصفحة الرئيسية ==========
 app.get(
   "/",
   requireLogin((req, res) => {
+    const isOwner = req.user.role === "owner";
     res.send(`
 <html dir="rtl" lang="ar">
 <head><meta charset="utf-8" /><title>${STORE_NAME} - لوحة البوت</title></head>
@@ -857,7 +945,11 @@ app.get(
   <ul>
     <li><a href="/inbox-a" style="color:#a855f7;">لوحة A (نمط واتساب ويب)</a></li>
     <li><a href="/inbox-b" style="color:#a855f7;">لوحة B (نمط بسيط)</a></li>
-    ${req.user.role === "owner" ? '<li><a href="/owner" style="color:#a855f7;">قائمة المالك</a></li>' : ""}
+    ${
+      isOwner
+        ? '<li><a href="/owner" style="color:#a855f7;">قائمة المالك</a></li>'
+        : ""
+    }
     <li><a href="/logout" style="color:#f97373;">تسجيل خروج</a></li>
   </ul>
 </body>
@@ -866,11 +958,12 @@ app.get(
   })
 );
 
-// ========== لوحة A (نفس اللي عطيتك قبل + بلوك/إزالة + اسم الموظف) ==========
+// ========== لوحة A ==========
 app.get(
   "/inbox-a",
   requireLogin((req, res) => {
     const initialWa = req.query.wa || "";
+    const isOwner = req.user.role === "owner";
     res.send(`
 <!DOCTYPE html>
 <html lang="ar" dir="rtl">
@@ -900,7 +993,15 @@ app.get(
     .chat-header-right { display:flex; flex-direction:column; align-items:flex-end; gap:4px; font-size:12px; }
     .status-pill { padding:3px 8px; border-radius:999px; border:1px solid #4ade8055; color:#bbf7d0; background:#16a34a22; }
     .status-pill.off { border-color:#f9737355; color:#fecaca; background:#b91c1c22; }
-    .chat-header-buttons { display:flex; gap:4px; }
+    .chat-header-buttons {
+      display:flex;
+      gap:6px;
+      background:#020617;
+      padding:6px 8px;
+      border-radius:999px;
+      border:1px solid #1f2937;
+      box-shadow:0 8px 18px rgba(15,23,42,0.7);
+    }
     .btn-small { padding:4px 9px; border-radius:999px; border:none; background:linear-gradient(135deg,#a855f7,#ec4899); color:#fff; font-size:11px; cursor:pointer; }
     .btn-small.danger { background:linear-gradient(135deg,#ef4444,#f97316); }
     .btn-small.block { background:linear-gradient(135deg,#f97316,#b91c1c); }
@@ -937,7 +1038,14 @@ app.get(
       </div>
       <div class="sidebar-actions">
         <span style="font-size:11px;">مرحباً ${req.user.name}</span>
-        <span><a href="/owner">المالك</a> • <a href="/logout">خروج</a></span>
+        <span>
+          ${
+            isOwner
+              ? '<a href="/owner">المالك</a> • '
+              : ""
+          }
+          <a href="/logout">خروج</a>
+        </span>
       </div>
       <div id="contactList" class="contact-list"></div>
     </div>
@@ -1113,7 +1221,6 @@ app.get(
           body:JSON.stringify({wa_id:waId,text})
         });
         agentTextInput.value = "";
-        // نحدّث فورًا
         if (!conversations[waId]) conversations[waId] = [];
         conversations[waId].push({
           from:"agent",
@@ -1197,10 +1304,11 @@ app.get(
   })
 );
 
-// ========== لوحة B (بسيطة فوق/تحت مع بلوك/إزالة) ==========
+// ========== لوحة B ==========
 app.get(
   "/inbox-b",
   requireLogin((req, res) => {
+    const isOwner = req.user.role === "owner";
     res.send(`
 <!DOCTYPE html>
 <html lang="ar" dir="rtl">
@@ -1251,7 +1359,11 @@ app.get(
         <div class="sub">لوحة B - نمط بسيط</div>
       </div>
       <div>
-        <a href="/owner">المالك</a> •
+        ${
+          isOwner
+            ? '<a href="/owner">المالك</a> • '
+            : ""
+        }
         <a href="/">الرئيسية</a> •
         <a href="/logout">خروج</a>
       </div>
