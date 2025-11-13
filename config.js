@@ -27,7 +27,7 @@ export const CONFIG = {
  STORE_NAME: "جمعية تنمية المواهب",
 
   // رابط المتجر (إذا طلبه العميل)
-  STORE_URL: "",
+  STORE_URL: "https://aldeem35.com/",
 
   // رابط السيرفر (دومين Render أو غيره)
   PANEL_BASE_URL: "https://a1-9b9e.onrender.com",
