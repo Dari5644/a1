@@ -4,7 +4,7 @@
 import express from "express";
 import axios from "axios";
 import OpenAI from "openai";
-
+import config from "./config.js";
 // =========== إعدادات قابلة للتعديل بسرعة ===========
 
 // غيّر اسم المتجر هنا
@@ -30,10 +30,10 @@ let GLOBAL_BOT_ENABLED = true;
 
 // =========== مفاتيح من env (لا تحطها داخل الكود) ===========
 const PORT = process.env.PORT || 3000;
-const VERIFY_TOKEN = config.js.VERIFY_TOKEN || "mawaheb_verify";
-const WABA_TOKEN = config.js.WABA_TOKEN; // من Meta
-const PHONE_ID = config.js.PHONE_ID;     // phone_number_id من Meta
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY; // من OpenAI
+const VERIFY_TOKEN = config.VERIFY_TOKEN || "mawaheb_verify";
+const WABA_TOKEN = config.WABA_TOKEN; // من Meta
+const PHONE_ID = config.PHONE_ID;     // phone_number_id من Meta
+const OPENAI_API_KEY = config.OPENAI_API_KEY; // من OpenAI
 
 if (!WABA_TOKEN || !PHONE_ID || !OPENAI_API_KEY) {
   console.warn("⚠️ تأكد من ضبط WABA_TOKEN و PHONE_ID و OPENAI_API_KEY في env");
