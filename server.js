@@ -16,7 +16,7 @@ const VERIFY_TOKEN = "mawaheb_verify";
 const WABA_TOKEN =
   "EAAMlJZBsLvHQBP430JnAZA3a1ymKksXew7rsERa7fYzFQKoUehqIDPqNwYoVg3RIC6OwQGd3ZA2K7ZBEn390s1SeP5Gvbs1Wi3B75UPyEYT1gKs2Sae5w0emCo7L9EqeE6ktDNFjsqZAcBnnsBFdZA8qZAI73c7jthFxFvLiMXnZC2nZBNoIgc0InxBuI5SefnAZDZD";
 
-const PHONE_ID = "0561340876"; // ⚠️ هذا رقم جوال، المفروض Phone Number ID يكون رقم طويل من Meta مثل 1234567890
+const PHONE_ID = "830233543513578"; // ⚠️ هذا رقم جوال، المفروض Phone Number ID يكون رقم طويل من Meta مثل 1234567890
 const WABA_ID = "1325564105512012";
 
 const OPENAI_API_KEY =
