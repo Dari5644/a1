@@ -114,7 +114,7 @@ app.post("/webhook", async (req, res) => {
             content: text,
           },
         ],
-      });
+            
 
         replyText =
           completion.choices?.[0]?.message?.content?.trim() ||
