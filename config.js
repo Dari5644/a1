@@ -41,7 +41,7 @@ export const CONFIG = {
   ],
   // إعداد قالب الرسالة الجماعية (Template)
   TEMPLATE_NAME: "dari",     // اسم القالب في واتساب (مثال: promo_offer_v1)
-  TEMPLATE_LANG: "en",                     // ar أو en حسب تعريف القالب
+  TEMPLATE_LANG: "en_US",                     // ar أو en حسب تعريف القالب
 
 };
 
