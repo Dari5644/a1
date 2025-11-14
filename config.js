@@ -40,7 +40,7 @@ export const CONFIG = {
     // { name: "موظف 1", wa_id: "9665XXXXXXXX", notify: true },
   ],
   // إعداد قالب الرسالة الجماعية (Template)
-  TEMPLATE_NAME: "dari",     // اسم القالب في واتساب (مثال: promo_offer_v1)
+  TEMPLATE_NAME: "hello_world",     // اسم القالب في واتساب (مثال: promo_offer_v1)
   TEMPLATE_LANG: "en_US",                     // ar أو en حسب تعريف القالب
 
 };
