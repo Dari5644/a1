@@ -7,32 +7,35 @@ const OpenAI = require("openai");
 
 dotenv.config();
 
-// عميل OpenAI
+// OpenAI
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-// تعريف البوت (عدّله حسب اللي تبيه)
+// تعريف البوت
 const SYSTEM_PROMPT = `
 أنت بوت ذكاء اصطناعي ترد على رسائل الواتساب.
 - ردودك قصيرة وواضحة وباللغة العربية.
-- إذا سلّم عليك أحد (السلام عليكم / هلا / مرحبا) رد بتحية لطيفة ثم اسأله: "كيف أقدر أساعدك؟"
+- إذا سلّم عليك أحد رد بتحية لطيفة ثم اسأله: "كيف أقدر أساعدك؟"
 - لا تعطي روابط ولا أرقام إلا إذا طلبها المستخدم صراحة.
-- إذا سألك عن شيء عام (سؤال ثقافي، استفسار، مساعدة) جاوبه بشكل مختصر.
-- تجنّب الفقرات الطويلة والرسائل المملة، خلك خفيف وواضح.
+- تجنّب الفقرات الطويلة.
 `;
 
-// إعداد واتساب ويب
+// إعداد واتساب
 const client = new Client({
-  authStrategy: new LocalAuth(),      // يحفظ الجلسة في مجلد .wwebjs_auth
+  authStrategy: new LocalAuth(),
   puppeteer: {
     args: ["--no-sandbox", "--disable-setuid-sandbox"],
   },
 });
 
+// هنا الباركود 👇
 client.on("qr", (qr) => {
-  console.log("📲 امسح هذا الـ QR من تطبيق واتساب (استخدام الجهاز المرتبط):");
-  qrcode.generate(qr, { small: true });
+  console.clear();
+  console.log("📲 هذا هو كود الـ QR (خام)، تقدر تنسخه وتلصقه في أي موقع توليد QR:\n");
+  console.log(qr);
+  console.log("\n📌 الآن نعرض QR صغير في التيرمنال، قرّب الجوال وامسحه 👇\n");
+  qrcode.generate(qr, { small: true }); // هذا الـ QR الصغير
 });
 
 client.on("ready", () => {
@@ -40,7 +43,7 @@ client.on("ready", () => {
 });
 
 client.on("authenticated", () => {
-  console.log("🔐 تم تسجيل الدخول بنجاح (Authenticated).");
+  console.log("🔐 تم تسجيل الدخول بنجاح.");
 });
 
 client.on("auth_failure", (msg) => {
@@ -51,34 +54,27 @@ client.on("disconnected", (reason) => {
   console.log("⚠️ تم فصل الاتصال:", reason);
 });
 
-// معالجة الرسائل
+// استقبال الرسائل
 client.on("message", async (msg) => {
   try {
-    const from = msg.from;        // رقم المرسل
+    const from = msg.from;
     const body = (msg.body || "").trim();
 
-    // تجاهل رسائل النظام / الستاتس
     if (msg.type !== "chat") return;
-
-    // اختياري: تجاهل المجموعات (خليه يرد على الخاص فقط)
-    if (msg.from.endsWith("@g.us")) {
-      return;
-    }
+    if (msg.from.endsWith("@g.us")) return; // تجاهل القروبات
 
     console.log(`📩 رسالة من ${from}: ${body}`);
 
-    // في حال رسائل قصيرة جدًا ما تحتاج AI (مثل "هلا")
     if (!body) return;
 
-    // استدعاء OpenAI
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [
         { role: "system", content: SYSTEM_PROMPT },
         { role: "user", content: body },
       ],
-      temperature: 0.4,
-      max_tokens: 250,
+      temperature: 0.5,
+      max_tokens: 200,
     });
 
     const reply = completion.choices[0].message.content.trim();
@@ -93,5 +89,4 @@ client.on("message", async (msg) => {
   }
 });
 
-// تشغيل البوت
 client.initialize();
