@@ -2,9 +2,9 @@
   "name": "ai-whatsapp-bot",
   "version": "1.0.0",
   "description": "AI WhatsApp bot using whatsapp-web.js + OpenAI",
-  "main": "bot.js",
+  "main": "server.js",
   "scripts": {
-    "start": "node bot.js"
+    "start": "node server.js"
   },
   "dependencies": {
     "whatsapp-web.js": "^1.25.0",
