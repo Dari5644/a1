@@ -1,20 +1,15 @@
 {
-  "name": "aldeem-whatsapp-bot",
+  "name": "ai-whatsapp-bot",
   "version": "1.0.0",
-  "description": "WhatsApp AI bot + inbox for متجر الديم",
-"main": "bot.js",
-  "type": "module",
-"scripts": {
-  "start": "node bot.js"
-}
-
+  "description": "AI WhatsApp bot using whatsapp-web.js + OpenAI",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js"
   },
   "dependencies": {
-    "axios": "^1.7.4",
-    "body-parser": "^1.20.2",
-    "cors": "^2.8.5",
-    "express": "^4.19.2",
+    "whatsapp-web.js": "^1.25.0",
+    "qrcode-terminal": "^0.12.0",
     "openai": "^4.67.1",
-    "better-sqlite3": "^9.6.0"
+    "dotenv": "^16.4.5"
   }
 }
