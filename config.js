@@ -35,10 +35,20 @@ export const CONFIG = {
   // حط هنا رابط السيرفر حقك (مثال: https://a1-9b9e.onrender.com)
   PANEL_URL: "https://a1-9b9e.onrender.com",
 
- AGENTS: [
+ DEFAULT_STAFF: [
     // مثال:
-    // { name: "موظف 1", wa_id: "9665XXXXXXXX", notify: true },
+    // {
+    //   id: "1",
+    //   name: "موظف 1",
+    //   email: "staff1@example.com",
+    //   password: "123456",
+    //   canBroadcast: true,
+    // },
   ],
+
+      UI: {
+    theme: "dark",
+    accentColor: "#fff",
   // إعداد قالب الرسالة الجماعية (Template)
   TEMPLATE_NAME: "hello_world",     // اسم القالب في واتساب (مثال: promo_offer_v1)
   TEMPLATE_LANG: "en_US",                     // ar أو en حسب تعريف القالب
