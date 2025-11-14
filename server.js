@@ -1,248 +1,230 @@
-// db.js
-import sqlite3 from 'sqlite3';
-import path from 'path';
-import { fileURLToPath } from 'url';
+// server.js
+import express from "express";
+import cors from "cors";
+import axios from "axios";
+import bodyParser from "body-parser";
+import { OpenAI } from "openai";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+import { config } from "./config.js";
+import {
+  initDb,
+  getOrCreateConversation,
+  addMessage,
+  setConversationMode,
+  listConversations,
+  getMessagesForConversation,
+  getConversationById,
+  addNotification
+} from "./db.js";
 
-// ملف قاعدة البيانات (يبقى محفوظ على السيرفر)
-const dbPath = path.join(__dirname, 'data', 'bot.sqlite');
+const app = express();
+initDb();
 
-// تأكد أن مجلد data موجود
-import fs from 'fs';
-if (!fs.existsSync(path.join(__dirname, 'data'))) {
-  fs.mkdirSync(path.join(__dirname, 'data'));
+app.use(cors());
+app.use(bodyParser.json());
+
+// OpenAI
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
+
+// ============ إرسال رسالة نصية WhatsApp ============
+async function sendWhatsAppText(to, text) {
+  const url = `https://graph.facebook.com/${config.META_VERSION}/${config.PHONE_ID}/messages`;
+
+  try {
+    await axios.post(
+      url,
+      {
+        messaging_product: "whatsapp",
+        to,
+        type: "text",
+        text: { body: text }
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${config.WABA_TOKEN}`,
+          "Content-Type": "application/json"
+        }
+      }
+    );
+  } catch (err) {
+    console.error("WhatsApp Error:", err.response?.data || err.message);
+  }
 }
 
-sqlite3.verbose();
-export const db = new sqlite3.Database(dbPath);
+// ============ إرسال قالب Template ============
+async function sendTemplate(to, templateName, variables = []) {
+  const url = `https://graph.facebook.com/${config.META_VERSION}/${config.PHONE_ID}/messages`;
 
-// إنشاء الجداول
-export function initDb() {
-  db.serialize(() => {
-    // جدول المحادثات
-    db.run(`
-      CREATE TABLE IF NOT EXISTS conversations (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        wa_id TEXT NOT NULL,
-        name TEXT,
-        last_message TEXT,
-        last_from TEXT,               -- user / bot / staff
-        last_at INTEGER,
-        mode TEXT DEFAULT 'bot',      -- bot / human
-        assigned_to TEXT,             -- email الموظف
-        blocked INTEGER DEFAULT 0,
-        created_at INTEGER
-      )
-    `);
-
-    // جدول الرسائل
-    db.run(`
-      CREATE TABLE IF NOT EXISTS messages (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        conversation_id INTEGER,
-        wa_id TEXT,
-        from_type TEXT,               -- user / bot / staff
-        body TEXT,
-        type TEXT DEFAULT 'text',
-        created_at INTEGER,
-        FOREIGN KEY(conversation_id) REFERENCES conversations(id)
-      )
-    `);
-
-    // جدول الموظفين
-    db.run(`
-      CREATE TABLE IF NOT EXISTS staff (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT,
-        email TEXT UNIQUE,
-        password TEXT,
-        is_owner INTEGER DEFAULT 0
-      )
-    `);
-
-    // جدول الإشعارات (طلب خدمة عملاء…الخ)
-    db.run(`
-      CREATE TABLE IF NOT EXISTS notifications (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        type TEXT,
-        payload TEXT,
-        is_read INTEGER DEFAULT 0,
-        created_at INTEGER
-      )
-    `);
-
-    // إنشاء المالك افتراضياً إذا ما كان موجود
-    db.get(`SELECT * FROM staff WHERE is_owner = 1 LIMIT 1`, (err, row) => {
-      if (err) return console.error('DB owner check error:', err);
-      if (!row) {
-        db.run(
-          `INSERT INTO staff (name, email, password, is_owner) VALUES (?, ?, ?, 1)`,
-          ['المالك', 'owner@example.com', '123456'],
-          err2 => {
-            if (err2) console.error('DB insert owner error:', err2);
-            else console.log('✅ Owner user created (email: owner@example.com / pass: 123456)');
+  const components =
+    variables.length > 0
+      ? [
+          {
+            type: "body",
+            parameters: variables.map(v => ({
+              type: "text",
+              text: v
+            }))
           }
-        );
+        ]
+      : [];
+
+  return axios.post(
+    url,
+    {
+      messaging_product: "whatsapp",
+      to,
+      type: "template",
+      template: {
+        name: templateName,
+        language: { code: "en_US" },
+        components
       }
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${config.WABA_TOKEN}`,
+        "Content-Type": "application/json"
+      }
+    }
+  );
+}
+
+// ============ Webhook Verify ============
+app.get("/webhook", (req, res) => {
+  if (req.query["hub.verify_token"] === config.VERIFY_TOKEN) {
+    return res.send(req.query["hub.challenge"]);
+  }
+  return res.sendStatus(403);
+});
+
+// ============ Webhook Receive ============
+app.post("/webhook", async (req, res) => {
+  try {
+    const data = req.body;
+
+    if (data.object !== "whatsapp_business_account") return res.sendStatus(404);
+
+    const entry = data.entry?.[0];
+    const change = entry?.changes?.[0];
+    const value = change?.value;
+    const messages = value?.messages;
+
+    if (!messages) return res.sendStatus(200);
+
+    const msg = messages[0];
+    const from = msg.from;
+    const name = value.contacts?.[0]?.profile?.name || "";
+    const text = msg.text?.body || "";
+
+    const conv = await getOrCreateConversation(from, name);
+
+    // إذا طلب خدمة عملاء
+    if (text.includes("خدمة عملاء") || text.includes("اكلم انسان")) {
+      await setConversationMode(conv.id, "human");
+      addNotification("human_request", { id: conv.id, wa_id: from });
+
+      await sendWhatsAppText(from, "تم تحويلك لخدمة العملاء 🌹");
+      return res.sendStatus(200);
+    }
+
+    // إذا المحادثة human → لا يتدخل البوت
+    if (conv.mode === "human") return res.sendStatus(200);
+
+    // حفظ رسالة المستخدم
+    await addMessage(conv.id, from, "user", text);
+
+    // رد البوت
+    const systemPrompt = `
+أنت بوت خدمة عملاء لمتجر ${config.STORE_NAME}.
+لا ترسل رابط المتجر إلا إذا طلب العميل.
+رد بجمل قصيرة فقط.
+`;
+
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: text }
+      ]
     });
-  });
-}
 
-// دوال مساعدة
+    const reply = completion.choices[0].message.content.trim();
 
-export function getOrCreateConversation(wa_id, name) {
-  return new Promise((resolve, reject) => {
-    db.get(
-      `SELECT * FROM conversations WHERE wa_id = ? LIMIT 1`,
-      [wa_id],
-      (err, row) => {
-        if (err) return reject(err);
-        const now = Date.now();
+    await sendWhatsAppText(from, reply);
+    await addMessage(conv.id, from, "bot", reply);
 
-        if (row) return resolve(row);
+    res.sendStatus(200);
+  } catch (err) {
+    console.error("Webhook Error:", err);
+    res.sendStatus(500);
+  }
+});
 
-        db.run(
-          `INSERT INTO conversations
-           (wa_id, name, last_message, last_from, last_at, mode, created_at)
-           VALUES (?, ?, ?, 'user', ?, 'bot', ?)`,
-          [wa_id, name || '', '', now, now],
-          function (err2) {
-            if (err2) return reject(err2);
-            db.get(
-              `SELECT * FROM conversations WHERE id = ?`,
-              [this.lastID],
-              (err3, row2) => {
-                if (err3) return reject(err3);
-                resolve(row2);
-              }
-            );
-          }
-        );
-      }
-    );
-  });
-}
+// ============ API: قائمة المحادثات ============
+app.get("/api/conversations", async (req, res) => {
+  const rows = await listConversations();
+  res.json(rows);
+});
 
-export function addMessage(conversationId, wa_id, from_type, body, type = 'text') {
-  return new Promise((resolve, reject) => {
-    const now = Date.now();
-    db.run(
-      `INSERT INTO messages (conversation_id, wa_id, from_type, body, type, created_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [conversationId, wa_id, from_type, body, type, now],
-      function (err) {
-        if (err) return reject(err);
+// ============ API: رسائل المحادثة ============
+app.get("/api/conversations/:id/messages", async (req, res) => {
+  const id = req.params.id;
+  const rows = await getMessagesForConversation(id);
+  res.json(rows);
+});
 
-        // تحديث آخر رسالة في المحادثة
-        db.run(
-          `UPDATE conversations
-           SET last_message = ?, last_from = ?, last_at = ?
-           WHERE id = ?`,
-          [body, from_type, now, conversationId],
-          err2 => {
-            if (err2) return reject(err2);
-            resolve(this.lastID);
-          }
-        );
-      }
-    );
-  });
-}
+// ============ API: إرسال رد من الموظف ============
+app.post("/api/conversations/:id/send", async (req, res) => {
+  const { text, staffEmail } = req.body;
+  const convId = req.params.id;
 
-export function setConversationMode(conversationId, mode, assigned_to = null) {
-  return new Promise((resolve, reject) => {
-    db.run(
-      `UPDATE conversations SET mode = ?, assigned_to = ? WHERE id = ?`,
-      [mode, assigned_to, conversationId],
-      err => {
-        if (err) return reject(err);
-        resolve();
-      }
-    );
-  });
-}
+  const conv = getConversationById(convId);
+  if (!conv) return res.json({ error: "not found" });
 
-export function getConversationById(id) {
-  return new Promise((resolve, reject) => {
-    db.get(`SELECT * FROM conversations WHERE id = ?`, [id], (err, row) => {
-      if (err) return reject(err);
-      resolve(row);
-    });
-  });
-}
+  await setConversationMode(convId, "human", staffEmail);
 
-export function getConversationByWaId(wa_id) {
-  return new Promise((resolve, reject) => {
-    db.get(`SELECT * FROM conversations WHERE wa_id = ?`, [wa_id], (err, row) => {
-      if (err) return reject(err);
-      resolve(row);
-    });
-  });
-}
+  await sendWhatsAppText(conv.wa_id, text);
+  await addMessage(convId, conv.wa_id, "staff", text);
 
-export function listConversations(limit = 100) {
-  return new Promise((resolve, reject) => {
-    db.all(
-      `SELECT * FROM conversations ORDER BY last_at DESC LIMIT ?`,
-      [limit],
-      (err, rows) => {
-        if (err) return reject(err);
-        resolve(rows);
-      }
-    );
-  });
-}
+  res.json({ ok: true });
+});
 
-export function getMessagesForConversation(conversationId, limit = 200) {
-  return new Promise((resolve, reject) => {
-    db.all(
-      `SELECT * FROM messages
-       WHERE conversation_id = ?
-       ORDER BY created_at ASC
-       LIMIT ?`,
-      [conversationId, limit],
-      (err, rows) => {
-        if (err) return reject(err);
-        resolve(rows);
-      }
-    );
-  });
-}
+// ============ إعادة تشغيل البوت ============
+app.post("/api/conversations/:id/restart-bot", async (req, res) => {
+  await setConversationMode(req.params.id, "bot");
+  res.json({ ok: true });
+});
 
-export function addNotification(type, payload) {
-  return new Promise((resolve, reject) => {
-    const now = Date.now();
-    db.run(
-      `INSERT INTO notifications (type, payload, created_at)
-       VALUES (?, ?, ?)`,
-      [type, JSON.stringify(payload), now],
-      function (err) {
-        if (err) return reject(err);
-        resolve(this.lastID);
-      }
-    );
-  });
-}
+// ============ إرسال قالب hello_world ============
+app.post("/api/broadcast", async (req, res) => {
+  const { numbers } = req.body;
 
-export function listNotifications(onlyUnread = false) {
-  return new Promise((resolve, reject) => {
-    let sql = `SELECT * FROM notifications`;
-    if (onlyUnread) sql += ` WHERE is_read = 0`;
-    sql += ` ORDER BY created_at DESC LIMIT 100`;
-    db.all(sql, [], (err, rows) => {
-      if (err) return reject(err);
-      resolve(rows);
-    });
-  });
-}
+  const results = [];
 
-export function markNotificationRead(id) {
-  return new Promise((resolve, reject) => {
-    db.run(`UPDATE notifications SET is_read = 1 WHERE id = ?`, [id], err => {
-      if (err) return reject(err);
-      resolve();
-    });
-  });
-}
+  for (const num of numbers) {
+    const fixed = num.replace(/^0/, "966");
+    try {
+      await sendTemplate(fixed, config.BROADCAST_TEMPLATE);
+      results.push({ number: fixed, ok: true });
+    } catch (err) {
+      results.push({
+        number: fixed,
+        ok: false,
+        error: err.response?.data || err.message
+      });
+    }
+  }
+
+  res.json({ results });
+});
+
+// ============ الصفحة الرئيسية ============
+app.get("/", (req, res) => {
+  res.send("WhatsApp Bot Server Running ✔");
+});
+
+app.listen(config.PORT, () =>
+  console.log("🚀 SERVER RUNNING ON PORT " + config.PORT)
+);
