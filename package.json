@@ -3,9 +3,9 @@
   "version": "1.0.0",
   "description": "Smart Bot – WhatsApp Web AI bot + Zid integration",
   "type": "module",
-  "main": "servar.js",
+  "main": "server.js",
   "scripts": {
-    "start": "node servar.js"
+    "start": "node server.js"
   },
   "dependencies": {
     "@whiskeysockets/baileys": "latest",
