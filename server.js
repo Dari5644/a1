@@ -435,10 +435,11 @@ async function fetchNewZidOrders() {
   try {
     const url = `${ZID_CONFIG.API_BASE}/managers/store/orders`;
     const res = await axios.get(url, {
-      headers: {
-        Authorization: `Bearer ${ZID_ACCESS_TOKEN}`,
-        "Accept-Language": "ar"
-      },
+    headers: {
+  "Access-Token": ZID_ACCESS_TOKEN,
+  "Accept-Language": "ar"
+},
+
       params: {
         per_page: 30,
         sort: "-created_at"
