@@ -1,389 +1,587 @@
-// server.js
-const express = require("express");
-const bodyParser = require("body-parser");
-const dotenv = require("dotenv");
-const crypto = require("crypto");
-const path = require("path");
-const { productsConfig } = require("./config");
+// index.js
+import makeWASocket, {
+  useMultiFileAuthState,
+  DisconnectReason,
+  fetchLatestBaileysVersion
+} from "@whiskeysockets/baileys";
+import Pino from "pino";
+import qrcode from "qrcode-terminal";
+import dotenv from "dotenv";
+import OpenAI from "openai";
+import axios from "axios";
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
+
+import { STORE_CONFIG, BOT_SYSTEM_PROMPT, ZID_CONFIG } from "./config.js";
 
 dotenv.config();
 
-const app = express();
-const PORT = process.env.PORT || 3000;
-const BASE_URL = process.env.BASE_URL || `http://localhost:${PORT}`;
+// ====== إعداد مسارات الملفات (ESM) ======
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
-app.use(bodyParser.json());
-app.use(express.static(path.join(__dirname, "public")));
+// ====== OpenAI ======
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY
+});
+const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4.1-mini";
 
-// خريطة بسيطة للاشتراكات (لو تبي دائم، استبدلها بقاعدة بيانات)
-const subscriptions = new Map();
-// key = activationToken
-// value = { type, plan, days, productName, orderId, customerPhone, botName, whatsappNumber, welcomeMessage, stopKeyword, humanKeyword, expiresAt, used, createdAt }
+// ====== رقم صاحب البوت ======
+const OWNER_NUMBER = (process.env.BOT_OWNER_NUMBER || "").replace(/\D/g, "");
 
-function generateToken() {
-  return crypto.randomBytes(16).toString("hex");
-}
+// ====== توكن زد ======
+const ZID_ACCESS_TOKEN = process.env.ZID_ACCESS_TOKEN || "";
 
-// جلب قيمة حقل مخصص من الطلب (تضبطها في زد)
-function getCustomField(event, key) {
-  const fields =
-    event.custom_fields ||
-    event.customFields ||
-    event.metadata ||
-    [];
+// ====== متغيّرات عالمية ======
+let waSock = null;
+let waReady = false;
 
-  const found = fields.find(
-    (f) =>
-      f.key === key ||
-      f.name === key ||
-      f.field === key
-  );
+// تخزين الاشتراكات: { phone, type, productKey, months, expiresAt, lastOrderId }
+let subscriptions = loadJson(ZID_CONFIG.SUBSCRIPTIONS_FILE, []);
 
-  return found ? found.value : null;
-}
+// الطلبات المعالجة من زد
+const processedOrders = new Set(
+  loadJson(ZID_CONFIG.PROCESSED_ORDERS_FILE, []).map(String)
+);
 
-// 🔔 دالة إرسال رسالة واتساب (تعديلها حسب نظامك)
-// حالياً بس تطبع في الـ console –
-// أنت هنا تربطها مع ميزة الإرسال اللي عندك (Meta, WATI, API ثاني…)
-async function sendWhatsAppMessage(toPhone, message) {
-  console.log("📨 [FAKE WHATSAPP SEND] إلى:", toPhone);
-  console.log(message);
-  // TODO: هنا تربط مع النظام الحقيقي اللي يرسل واتساب
-}
+// حالة المحادثة: وضع البوت + أسئلة التأكيد
+// state = { mode: 'bot' | 'human', pendingHumanConfirm: boolean, pendingBotConfirm: boolean }
+const chatState = new Map();
 
-// 🧷 Webhook من زد – استقباله عند اكتمال الطلب
-app.post("/webhook/zid", async (req, res) => {
+// ====== دوال تخزين ======
+function loadJson(filePath, defaultValue) {
   try {
-    const event = req.body;
-    console.log("📦 Webhook من زد:", JSON.stringify(event, null, 2));
-
-    const orderId = event.order_id || event.id || event.orderId;
-    const customerPhone =
-      event.customer_phone ||
-      (event.customer && event.customer.phone) ||
-      null;
-
-    const items = event.items || event.order_items || event.products || [];
-
-    if (!customerPhone || !items.length) {
-      console.warn("❗ لا يوجد رقم عميل أو منتجات في الطلب");
-      return res.sendStatus(400);
-    }
-
-    // الحقول المخصصة في زد (تضيفها في صفحة الطلب)
-    const whatsappNumber = getCustomField(event, "whatsapp_number"); // رقم الواتساب اللي بيشغل البوت
-    const botName      = getCustomField(event, "bot_name");          // اسم البوت / المتجر
-    const welcomeMsg   = getCustomField(event, "welcome_message");   // الرسالة التعريفية
-    const stopKeyword  = getCustomField(event, "stop_keyword");      // كلمة إيقاف البوت
-    const humanKeyword = getCustomField(event, "human_keyword");     // كلمة خدمة العملاء
-
-    // نمشي على كل المنتجات في الطلب
-    for (const item of items) {
-      const productId = item.product_id || item.sku || item.id;
-
-      const config = productsConfig[productId];
-      if (!config) continue; // منتج عادي مو بوت
-
-      const token = generateToken();
-      const now = new Date();
-      const expiresAt = new Date(
-        now.getTime() + config.days * 24 * 60 * 60 * 1000
-      );
-
-      const sub = {
-        type: config.type,
-        plan: config.plan,
-        days: config.days,
-        productName: config.name,
-        orderId,
-        customerPhone,
-        botName: botName || "البوت الخاص بك",
-        whatsappNumber: whatsappNumber || customerPhone,
-        welcomeMessage:
-          welcomeMsg || "مرحباً بك! كيف أقدر أخدمك؟ 👋",
-        stopKeyword: stopKeyword || "إيقاف البوت",
-        humanKeyword: humanKeyword || "خدمة العملاء",
-        expiresAt,
-        used: false,
-        createdAt: now
-      };
-
-      subscriptions.set(token, sub);
-
-      const activationLink = `${BASE_URL}/activate/${token}`;
-      console.log("🎟 تم إنشاء اشتراك جديد مع رابط تفعيل:", activationLink);
-
-      // ✅ هنا يرسل الرابط للرقم المرتبط
-      // واحد من الاثنين:
-      // - ترسله على رقم الواتساب الخاص بالعميل
-      // - أو رقم الواتساب المخصص للبوت (whatsappNumber)
-      const targetPhone = sub.whatsappNumber || customerPhone;
-
-      const msg = [
-        `مرحباً 👋`,
-        `تم تفعيل اشتراك: ${config.name}`,
-        `مدة الاشتراك: ${config.days} يوم`,
-        ``,
-        `رابط التفعيل (يعمل مرة واحدة فقط):`,
-        activationLink
-      ].join("\n");
-
-      await sendWhatsAppMessage(targetPhone, msg);
-    }
-
-    res.sendStatus(200);
+    const fullPath = path.join(__dirname, filePath);
+    if (!fs.existsSync(fullPath)) return defaultValue;
+    const raw = fs.readFileSync(fullPath, "utf8");
+    return JSON.parse(raw);
   } catch (err) {
-    console.error("🔥 Webhook ERR:", err);
-    res.sendStatus(500);
+    console.error(`❌ خطأ في قراءة ${filePath}:`, err.message);
+    return defaultValue;
   }
-});
+}
 
-// صفحة تفعيل الاشتراك (رابط يعمل مرة واحدة)
-app.get("/activate/:token", (req, res) => {
-  const { token } = req.params;
-  const sub = subscriptions.get(token);
-
-  if (!sub) {
-    return res
-      .status(404)
-      .send(renderSimplePage("رابط غير صالح ❌", "الرابط الذي استخدمته غير صالح."));
+function saveJson(filePath, data) {
+  try {
+    const fullPath = path.join(__dirname, filePath);
+    fs.writeFileSync(fullPath, JSON.stringify(data, null, 2), "utf8");
+  } catch (err) {
+    console.error(`❌ خطأ في حفظ ${filePath}:`, err.message);
   }
+}
 
-  if (sub.used) {
-    return res
-      .status(400)
-      .send(renderSimplePage("تم استخدام الرابط ✅", "تم استخدام رابط التفعيل من قبل."));
+function saveSubscriptions() {
+  saveJson(ZID_CONFIG.SUBSCRIPTIONS_FILE, subscriptions);
+}
+
+function saveProcessedOrders() {
+  saveJson(ZID_CONFIG.PROCESSED_ORDERS_FILE, [...processedOrders]);
+}
+
+// ====== حالات المحادثة ======
+function getChatState(jid) {
+  if (!chatState.has(jid)) {
+    chatState.set(jid, {
+      mode: "bot",
+      pendingHumanConfirm: false,
+      pendingBotConfirm: false
+    });
   }
+  return chatState.get(jid);
+}
 
+// ====== دوال رقم الجوال ======
+function normalizePhone(phone) {
+  if (!phone) return null;
+  let p = String(phone).replace(/\D/g, "");
+  if (p.startsWith("00")) p = p.slice(2);
+  if (p.startsWith("00966")) p = p.slice(4);
+  if (p.startsWith("9660")) p = "966" + p.slice(4);
+  if (p.startsWith("05")) p = "966" + p.slice(1);
+  if (/^5\d{8}$/.test(p)) p = "966" + p;
+  if (!p.startsWith("966")) p = "966" + p;
+  return p;
+}
+
+function phoneToJid(phone) {
+  const p = normalizePhone(phone);
+  if (!p) return null;
+  return `${p}@s.whatsapp.net`;
+}
+
+// ====== اشتراكات ======
+function getSubscription(phone, type = "whatsapp") {
+  const p = normalizePhone(phone);
+  if (!p) return null;
   const now = new Date();
-  if (now > sub.expiresAt) {
-    return res
-      .status(400)
-      .send(renderSimplePage("انتهت صلاحية الرابط ⏰", "انتهت مدة صلاحية هذا الرابط."));
-  }
-
-  // نعدّه مستخدماً، عشان ما يشتغل إلا مرة وحده
-  sub.used = true;
-  subscriptions.set(token, sub);
-
-  // نعرض صفحة حسب نوع البوت
-  if (sub.type === "whatsapp_bot") {
-    return res.send(renderWhatsAppActivationPage(sub, token));
-  }
-
-  if (sub.type === "telegram_bot") {
-    return res.send(renderTelegramActivationPage(sub, token));
-  }
-
-  if (sub.type === "store_ai_bot") {
-    return res.send(renderStoreAIActivationPage(sub, token));
-  }
-
-  return res.send(
-    renderSimplePage("نوع اشتراك غير معروف", "لا يمكن تحديد نوع الاشتراك.")
+  const sub = subscriptions.find(
+    (s) => s.phone === p && s.type === type
   );
-});
+  if (!sub) return null;
+  if (new Date(sub.expiresAt) < now) return null;
+  return sub;
+}
 
-// ✅ API للـ client bots عشان يجيب إعدادات الاشتراك
-app.get("/api/subscription/:token", (req, res) => {
-  const { token } = req.params;
-  const sub = subscriptions.get(token);
-  if (!sub) {
-    return res.status(404).json({ ok: false, error: "not_found" });
-  }
+function upsertSubscription({ phone, type, months, productKey, orderId }) {
+  const p = normalizePhone(phone);
+  if (!p) return;
 
   const now = new Date();
-  const active = !sub.used || now <= sub.expiresAt; // حسب ما تبي (هنا مثال)
+  let start = now;
+  let existing = subscriptions.find(
+    (s) => s.phone === p && s.type === type
+  );
 
-  return res.json({
-    ok: true,
-    active: now <= sub.expiresAt,
-    type: sub.type,
-    plan: sub.plan,
-    days: sub.days,
-    productName: sub.productName,
-    botName: sub.botName,
-    whatsappNumber: sub.whatsappNumber,
-    welcomeMessage: sub.welcomeMessage,
-    stopKeyword: sub.stopKeyword,
-    humanKeyword: sub.humanKeyword,
-    expiresAt: sub.expiresAt,
-    createdAt: sub.createdAt
+  if (existing && new Date(existing.expiresAt) > now) {
+    // مدّد من الانتهاء الحالي
+    start = new Date(existing.expiresAt);
+    subscriptions = subscriptions.filter(
+      (s) => !(s.phone === p && s.type === type)
+    );
+  }
+
+  const expires = new Date(start);
+  expires.setMonth(expires.getMonth() + months);
+
+  const newSub = {
+    phone: p,
+    type,
+    productKey,
+    months,
+    lastOrderId: String(orderId),
+    startsAt: start.toISOString(),
+    expiresAt: expires.toISOString()
+  };
+
+  subscriptions.push(newSub);
+  saveSubscriptions();
+  return newSub;
+}
+
+// ====== أدوات نصية للبوت ======
+function isGreeting(text = "") {
+  const t = text.trim();
+  return (
+    t === "السلام عليكم" ||
+    t === "سلام عليكم" ||
+    t === "سلام" ||
+    t === "هلا" ||
+    t === "اهلا" ||
+    t === "مرحبا"
+  );
+}
+
+function containsAny(text, list) {
+  const t = text.toLowerCase();
+  return list.some((word) => t.includes(word.toLowerCase()));
+}
+
+function isYes(text = "") {
+  const t = text.trim().toLowerCase();
+  const yesWords = [
+    "نعم",
+    "اي",
+    "ايه",
+    "أيه",
+    "ايوه",
+    "أيوه",
+    "يب",
+    "تمام",
+    "اوكي",
+    "ok",
+    "اوكيه"
+  ];
+  return yesWords.some((w) => t.includes(w.toLowerCase()));
+}
+
+async function getAIReply(userText) {
+  try {
+    const completion = await openai.chat.completions.create({
+      model: OPENAI_MODEL,
+      messages: [
+        { role: "system", content: BOT_SYSTEM_PROMPT },
+        { role: "user", content: userText }
+      ],
+      max_tokens: 200,
+      temperature: 0.5
+    });
+
+    const reply = completion.choices[0]?.message?.content?.trim();
+    return reply || "تمام، كيف أقدر أخدمك؟";
+  } catch (err) {
+    console.error("🔥 OpenAI ERROR:", err.message);
+    return "أواجه مشكلة تقنية بسيطة حالياً، جرّب تعيد رسالتك بعد شوي 🌹";
+  }
+}
+
+// ====== رسالة عن عدم وجود اشتراك ======
+function buildNoSubscriptionMessage() {
+  return [
+    "هلا 👋",
+    "هذه خدمة بوت خاصة بعملاء *سمارت بوت – Smart Bot* اللي اشتروا باقة البوت.",
+    "",
+    "تقدر تطلب باقة البوت من الموقع ويتم تفعيلها على رقمك تلقائيًا:",
+    STORE_CONFIG.storeUrl
+  ].join("\n");
+}
+
+// ====== تحديد هل الطلب مدفوع في زد ======
+function isOrderPaid(order) {
+  const status =
+    (order.financial_status || order.payment_status || order.status || "")
+      .toString()
+      .toLowerCase();
+
+  const paidStatuses = [
+    "paid",
+    "تم الدفع",
+    "paid_online",
+    "completed",
+    "مكتمل",
+    "processing",
+    "processing_payment"
+  ];
+
+  const totalDue = Number(order.total_due || order.amount_due || 0);
+  if (!status && totalDue > 0) return false;
+
+  if (paidStatuses.some((s) => status.includes(s))) return true;
+
+  const total = Number(order.total || order.total_price || 0);
+  if (total > 0 && totalDue === 0) return true;
+
+  return false;
+}
+
+// ====== ربط واتساب ويب (Baileys) ======
+async function startWhatsApp() {
+  const { state, saveCreds } = await useMultiFileAuthState("./auth");
+  const { version, isLatest } = await fetchLatestBaileysVersion();
+  console.log("📦 WA version:", version, "isLatest:", isLatest);
+
+  const sock = makeWASocket({
+    version,
+    logger: Pino({ level: "silent" }),
+    printQRInTerminal: false,
+    auth: state
   });
-});
 
-// ====== HTML / تصميم الصفحات ======
-function renderLayout(title, contentHtml) {
-  return `
-<!DOCTYPE html>
-<html lang="ar" dir="rtl">
-<head>
-  <meta charset="UTF-8" />
-  <title>${title}</title>
-  <link rel="stylesheet" href="/css/style.css" />
-</head>
-<body>
-  <div class="page-wrapper">
-    <header class="main-header">
-      <div class="logo">Smart <span>Bot</span></div>
-      <nav class="nav-links">
-        <a href="/whatsapp.html">بوت واتساب</a>
-        <a href="/telegram.html">بوت تيليجرام</a>
-        <a href="/store-ai.html">بوت المتجر الذكي</a>
-      </nav>
-    </header>
+  waSock = sock;
 
-    <main class="content">
-      ${contentHtml}
-    </main>
+  sock.ev.on("connection.update", (update) => {
+    const { connection, lastDisconnect, qr } = update;
 
-    <footer class="main-footer">
-      <p>صُنع بحب 🤍 لنظام بيع البوتات الذكية عبر زد</p>
-    </footer>
-  </div>
-</body>
-</html>
-`;
+    if (qr) {
+      console.log("📲 امسح هذا الكود بواسطة واتساب للرقم 0561340876:");
+      qrcode.generate(qr, { small: true });
+    }
+
+    if (connection === "open") {
+      waReady = true;
+      console.log("✅ البوت متصل بنجاح من خلال واتساب ويب (Smart Bot).");
+    } else if (connection === "close") {
+      waReady = false;
+      const shouldReconnect =
+        (lastDisconnect?.error)?.output?.statusCode !==
+        DisconnectReason.loggedOut;
+
+      console.log("❌ الاتصال انقطع، shouldReconnect =", shouldReconnect);
+      if (shouldReconnect) {
+        startWhatsApp();
+      } else {
+        console.log("تم تسجيل الخروج من واتساب، احذف مجلد auth وأعد التشغيل.");
+      }
+    }
+  });
+
+  sock.ev.on("creds.update", saveCreds);
+
+  // استقبال الرسائل
+  sock.ev.on("messages.upsert", async ({ messages, type }) => {
+    if (type !== "notify") return;
+
+    for (const msg of messages) {
+      try {
+        const from = msg.key.remoteJid;
+        const fromMe = msg.key.fromMe;
+        const isGroup = from.endsWith("@g.us");
+        if (isGroup) continue;
+
+        const rawText =
+          msg.message?.conversation ||
+          msg.message?.extendedTextMessage?.text ||
+          msg.message?.imageMessage?.caption ||
+          msg.message?.videoMessage?.caption ||
+          "";
+
+        const text = rawText.trim();
+        if (!text) continue;
+
+        console.log("📩 رسالة من:", from, "النص:", text);
+
+        const normalizedFrom = from.replace(/\D/g, "");
+        const isOwner =
+          OWNER_NUMBER && normalizedFrom.endsWith(OWNER_NUMBER);
+
+        const state = getChatState(from);
+
+        // ====== رسائل المالك (أنت) ======
+        if (fromMe && isOwner) {
+          if (containsAny(text, STORE_CONFIG.botResumeKeywords)) {
+            state.pendingBotConfirm = true;
+            state.pendingHumanConfirm = false;
+            chatState.set(from, state);
+            console.log("⏳ بانتظار موافقة العميل لإرجاع البوت في هذه المحادثة.");
+          }
+          continue;
+        }
+
+        // ====== رسائل العميل ======
+        const clientPhone = normalizedFrom;
+
+        // تحقق الاشتراك (للبوت واتساب)
+        const sub = getSubscription(clientPhone, "whatsapp");
+        if (!sub) {
+          const msgNoSub = buildNoSubscriptionMessage();
+          await sock.sendMessage(from, { text: msgNoSub });
+          continue;
+        }
+
+        // 1) لو كنا ننتظر موافقة "خدمة العملاء؟"
+        if (state.pendingHumanConfirm) {
+          if (isYes(text)) {
+            state.mode = "human";
+            state.pendingHumanConfirm = false;
+            chatState.set(from, state);
+
+            await sock.sendMessage(from, {
+              text: STORE_CONFIG.humanTransferMessage
+            });
+          } else {
+            state.mode = "bot";
+            state.pendingHumanConfirm = false;
+            chatState.set(from, state);
+
+            const reply = await getAIReply(text);
+            await sock.sendMessage(from, { text: reply });
+          }
+          continue;
+        }
+
+        // 2) لو كنا ننتظر موافقة "رجوع للبوت"
+        if (state.pendingBotConfirm) {
+          if (isYes(text)) {
+            state.mode = "bot";
+            state.pendingBotConfirm = false;
+            chatState.set(from, state);
+
+            await sock.sendMessage(from, {
+              text: "تم إرجاعك للبوت الذكي (Smart Bot) 🤖✨"
+            });
+          } else {
+            state.mode = "human";
+            state.pendingBotConfirm = false;
+            chatState.set(from, state);
+
+            await sock.sendMessage(from, {
+              text: "تمام، راح نكمّل مع خدمة العملاء 🌹"
+            });
+          }
+          continue;
+        }
+
+        // 3) طلب خدمة عملاء
+        if (containsAny(text, STORE_CONFIG.humanKeywords)) {
+          state.pendingHumanConfirm = true;
+          state.pendingBotConfirm = false;
+          chatState.set(from, state);
+
+          await sock.sendMessage(from, {
+            text:
+              "واضح يمكن جوابي ما كان كافي 😊\nتحب أحوّلك على خدمة العملاء؟ اكتب نعم أو لا."
+          });
+          continue;
+        }
+
+        // 4) لو المحادثة عند خدمة العملاء
+        if (state.mode === "human") {
+          console.log("👤 المحادثة حالياً عند خدمة العملاء، البوت ساكت.");
+          continue;
+        }
+
+        // 5) تحية
+        if (isGreeting(text)) {
+          await sock.sendMessage(from, {
+            text: STORE_CONFIG.welcomeReply
+          });
+          continue;
+        }
+
+        // 6) رد ذكاء اصطناعي
+        const reply = await getAIReply(text);
+        await sock.sendMessage(from, { text: reply });
+      } catch (err) {
+        console.error("❌ ERROR in message handler:", err);
+      }
+    }
+  });
 }
 
-function renderSimplePage(title, message) {
-  const inner = `
-  <section class="card">
-    <h1 class="title">${title}</h1>
-    <p class="text">${message}</p>
-  </section>
-  `;
-  return renderLayout(title, inner);
+// ====== زد: جلب الطلبات الجديدة ومعالجتها ======
+async function fetchNewZidOrders() {
+  if (!ZID_ACCESS_TOKEN) return [];
+
+  try {
+    const url = `${ZID_CONFIG.API_BASE}/managers/store/orders`;
+    const res = await axios.get(url, {
+      headers: {
+        Authorization: `Bearer ${ZID_ACCESS_TOKEN}`,
+        "Accept-Language": "ar"
+      },
+      params: {
+        per_page: 30,
+        sort: "-created_at"
+      }
+    });
+
+    const orders = res.data?.orders || res.data?.data || [];
+    return orders.filter((o) => !processedOrders.has(String(o.id)));
+  } catch (err) {
+    console.error(
+      "❌ خطأ في الاتصال بزد:",
+      err.response?.data || err.message
+    );
+    return [];
+  }
 }
 
-function renderWhatsAppActivationPage(sub, token) {
-  const inner = `
-<section class="card">
-  <h1 class="title">تفعيل ${sub.productName || "بوت واتساب"}</h1>
-  <p class="text">مرحباً بك 👋، تم إنشاء اشتراك بوت واتساب لمدة <strong>${sub.days} يوماً</strong>.</p>
+// معرفة نوع البوت من عناصر الطلب
+function detectProductKey(order) {
+  const items = order.items || order.order_items || [];
+  const entries = Object.entries(ZID_CONFIG.PRODUCTS);
 
-  <div class="info-grid">
-    <div>
-      <h3>اسم البوت</h3>
-      <p>${sub.botName}</p>
-    </div>
-    <div>
-      <h3>رقم الواتساب المرتبط</h3>
-      <p>${sub.whatsappNumber}</p>
-    </div>
-    <div>
-      <h3>الرسالة التعريفية</h3>
-      <p>${sub.welcomeMessage}</p>
-    </div>
-    <div>
-      <h3>كلمة إيقاف البوت</h3>
-      <p>${sub.stopKeyword}</p>
-    </div>
-    <div>
-      <h3>كلمة خدمة العملاء</h3>
-      <p>${sub.humanKeyword}</p>
-    </div>
-    <div>
-      <h3>ينتهي الاشتراك في</h3>
-      <p>${sub.expiresAt.toLocaleString("ar-SA")}</p>
-    </div>
-  </div>
+  for (const item of items) {
+    const pid = String(item.product_id || item.sku || "").trim();
+    if (!pid) continue;
+    const match = entries.find(
+      ([, p]) => String(p.zidProductId) === pid
+    );
+    if (match) return match[0];
+  }
 
-  <div class="highlight-box">
-    <h2>طريقة استخدام هذا الاشتراك</h2>
-    <ol>
-      <li>نزّل سكربت البوت الخاص بك (client-bot-whatsapp.js مثلاً).</li>
-      <li>ضع التوكن التالي داخل السكربت:</li>
-    </ol>
-    <pre class="token-box">${token}</pre>
-    <p class="text small">
-      سكربت البوت سيستخدم هذا التوكن للاتصال بـ /api/subscription/${token}
-      وجلب إعدادات البوت (التعريف + كلمات الإيقاف + خدمة العملاء) والتحقق من مدة الاشتراك.
-    </p>
-  </div>
-</section>
-`;
-  return renderLayout("تفعيل بوت واتساب", inner);
+  return null;
 }
 
-function renderTelegramActivationPage(sub, token) {
-  const inner = `
-<section class="card">
-  <h1 class="title">تفعيل ${sub.productName || "بوت تيليجرام"}</h1>
-  <p class="text">تم إنشاء اشتراك بوت تيليجرام لمدة <strong>${sub.days} يوماً</strong>.</p>
-
-  <div class="info-grid">
-    <div>
-      <h3>اسم البوت</h3>
-      <p>${sub.botName}</p>
-    </div>
-    <div>
-      <h3>ينتهي الاشتراك في</h3>
-      <p>${sub.expiresAt.toLocaleString("ar-SA")}</p>
-    </div>
-  </div>
-
-  <div class="highlight-box">
-    <h2>خطوات ربط بوت تيليجرام</h2>
-    <ol>
-      <li>إنشاء بوت جديد من <strong>@BotFather</strong> والحصول على Token.</li>
-      <li>ضبط سكربت بوت تيليجرام (client-bot-telegram.js مثلاً) مع هذا التوكن:</li>
-    </ol>
-    <pre class="token-box">${token}</pre>
-    <p class="text small">
-      سكربت البوت سيستخدم هذا التوكن للاتصال بـ /api/subscription/${token}
-      وجلب إعدادات ومدة الاشتراك.
-    </p>
-  </div>
-</section>
-`;
-  return renderLayout("تفعيل بوت تيليجرام", inner);
+// استخراج رقم العميل من الطلب
+function extractOrderPhone(order) {
+  const phone =
+    order.customer?.phone ||
+    order.customer?.mobile ||
+    order.billing_address?.phone ||
+    order.shipping_address?.phone;
+  return normalizePhone(phone);
 }
 
-function renderStoreAIActivationPage(sub, token) {
-  const inner = `
-<section class="card">
-  <h1 class="title">تفعيل ${sub.productName || "بوت المتجر الذكي"}</h1>
-  <p class="text">تم إنشاء اشتراك بوت ذكاء اصطناعي لمتجرك لمدة <strong>${sub.days} يوماً</strong>.</p>
+// رسالة التفعيل
+function buildActivationMessage(sub, product) {
+  const exp = new Date(sub.expiresAt);
+  const expDate = exp.toLocaleDateString("ar-SA");
 
-  <div class="info-grid">
-    <div>
-      <h3>اسم البوت / المتجر</h3>
-      <p>${sub.botName}</p>
-    </div>
-    <div>
-      <h3>الرسالة التعريفية</h3>
-      <p>${sub.welcomeMessage}</p>
-    </div>
-    <div>
-      <h3>كلمة إيقاف البوت</h3>
-      <p>${sub.stopKeyword}</p>
-    </div>
-    <div>
-      <h3>كلمة خدمة العملاء</h3>
-      <p>${sub.humanKeyword}</p>
-    </div>
-  </div>
-
-  <div class="highlight-box">
-    <h2>تركيب البوت في موقعك</h2>
-    <p class="text">أضف الكود التالي داخل &lt;head&gt; أو قبل &lt;/body&gt; في موقعك:</p>
-    <pre class="token-box">&lt;script src="${BASE_URL}/widget.js" data-token="${token}"&gt;&lt;/script&gt;</pre>
-    <p class="text small">
-      سكربت الويدجت سيستخدم هذا التوكن للاتصال بـ /api/subscription/${token}
-      وتشغيل بوت الذكاء الاصطناعي داخل موقعك طوال مدة الاشتراك.
-    </p>
-  </div>
-</section>
-`;
-  return renderLayout("تفعيل بوت المتجر الذكي", inner);
+  return [
+    `حياك الله في ${STORE_CONFIG.storeName} 🌹`,
+    "",
+    `تم تفعيل باقتك: ${product.label}`,
+    `مدة الاشتراك: ${sub.months} شهر/أشهر.`,
+    `تاريخ انتهاء الاشتراك: ${expDate}`,
+    "",
+    "من الآن البوت بيخدمك على هذا الرقم في الواتساب 🤖.",
+    "",
+    `رابط الموقع: ${STORE_CONFIG.storeUrl}`
+  ].join("\n");
 }
 
-// صفحة افتراضية
-app.get("/", (req, res) => {
-  res.redirect("/whatsapp.html");
-});
+// حلقة زد
+async function processZidOrdersLoop() {
+  if (!ZID_ACCESS_TOKEN) {
+    console.log("⏭️ لا يوجد ZID_ACCESS_TOKEN – تعطيل ربط زد");
+    return;
+  }
 
-app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-});
+  console.log(
+    "🔁 بدء فحص طلبات زد كل",
+    ZID_CONFIG.POLL_INTERVAL_MS / 1000,
+    "ثانية"
+  );
+
+  const run = async () => {
+    try {
+      const newOrders = await fetchNewZidOrders();
+      if (!newOrders.length) return;
+
+      for (const order of newOrders) {
+        const id = String(order.id);
+
+        // ✅ شرط: لازم الطلب يكون مدفوع
+        if (!isOrderPaid(order)) {
+          console.log(`⏳ الطلب ${id} غير مدفوع بعد، لن يتم تفعيل البوت.`);
+          continue;
+        }
+
+        const productKey = detectProductKey(order);
+
+        if (!productKey) {
+          processedOrders.add(id);
+          continue;
+        }
+
+        const product = ZID_CONFIG.PRODUCTS[productKey];
+        const phone = extractOrderPhone(order);
+
+        if (!phone) {
+          console.warn(
+            `⚠️ لم يتم العثور على رقم جوال للطلب ${id} لمنتج بوت`
+          );
+          processedOrders.add(id);
+          continue;
+        }
+
+        // إنشاء/تحديث اشتراك
+        const sub = upsertSubscription({
+          phone,
+          type: "whatsapp",
+          months: product.months,
+          productKey,
+          orderId: id
+        });
+
+        // إرسال رسالة تفعيل
+        if (waReady && waSock) {
+          const jid = phoneToJid(phone);
+          if (jid) {
+            const msg = buildActivationMessage(sub, product);
+            await waSock.sendMessage(jid, { text: msg });
+            console.log(
+              `✅ تم إرسال رسالة تفعيل بوت (${product.type}) للطلب ${id} على الرقم ${phone}`
+            );
+          }
+        }
+
+        processedOrders.add(id);
+      }
+
+      saveProcessedOrders();
+    } catch (err) {
+      console.error("❌ خطأ عام في حلقة زد:", err.message);
+    }
+  };
+
+  await run();
+  setInterval(run, ZID_CONFIG.POLL_INTERVAL_MS);
+}
+
+// ====== تشغيل البوت ======
+(async () => {
+  await startWhatsApp();
+  await processZidOrdersLoop();
+})();
