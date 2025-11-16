@@ -3,8 +3,8 @@ import makeWASocket, {
   useMultiFileAuthState,
   DisconnectReason,
   fetchLatestBaileysVersion
-} from "@adiwajshing/baileys";
-import P from "pino";
+} from "@whiskeysockets/baileys";
+import Pino from "pino";
 import qrcode from "qrcode-terminal";
 import dotenv from "dotenv";
 import OpenAI from "openai";
@@ -17,7 +17,7 @@ import { STORE_CONFIG, BOT_SYSTEM_PROMPT, ZID_CONFIG } from "./config.js";
 
 dotenv.config();
 
-// ====== إعداد مسارات الملفات ======
+// ====== إعداد مسارات الملفات (ESM) ======
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -179,7 +179,19 @@ function containsAny(text, list) {
 
 function isYes(text = "") {
   const t = text.trim().toLowerCase();
-  const yesWords = ["نعم", "اي", "ايه", "أيه", "ايوه", "أيوه", "يب", "تمام", "اوكي", "ok", "اوكيه"];
+  const yesWords = [
+    "نعم",
+    "اي",
+    "ايه",
+    "أيه",
+    "ايوه",
+    "أيوه",
+    "يب",
+    "تمام",
+    "اوكي",
+    "ok",
+    "اوكيه"
+  ];
   return yesWords.some((w) => t.includes(w.toLowerCase()));
 }
 
@@ -250,7 +262,7 @@ async function startWhatsApp() {
 
   const sock = makeWASocket({
     version,
-    logger: P({ level: "silent" }),
+    logger: Pino({ level: "silent" }),
     printQRInTerminal: false,
     auth: state
   });
