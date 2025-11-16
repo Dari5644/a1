@@ -8,8 +8,7 @@
     "start": "node index.js"
   },
   "dependencies": {
-    "@adiwajshing/baileys": "^6.0.0",
-
+    "@adiwajshing/baileys": "latest",
     "axios": "^1.7.2",
     "dotenv": "^16.4.5",
     "openai": "^4.53.0",
