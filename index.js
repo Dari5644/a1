@@ -216,7 +216,6 @@ function buildNoSubscriptionMessage() {
 
 // ====== تحديد هل الطلب مدفوع في زد ======
 function isOrderPaid(order) {
-  // نحاول نغطي أكثر من حقل محتمل من زد
   const status =
     (order.financial_status || order.payment_status || order.status || "")
       .toString()
@@ -232,13 +231,11 @@ function isOrderPaid(order) {
     "processing_payment"
   ];
 
-  // لو فيه حقل total_due أو amount_due و > 0 نعتبره غير مدفوع
   const totalDue = Number(order.total_due || order.amount_due || 0);
   if (!status && totalDue > 0) return false;
 
   if (paidStatuses.some((s) => status.includes(s))) return true;
 
-  // لو صفر مستحقات و فيه total > 0 نعتبره مدفوع
   const total = Number(order.total || order.total_price || 0);
   if (total > 0 && totalDue === 0) return true;
 
@@ -319,15 +316,12 @@ async function startWhatsApp() {
 
         // ====== رسائل المالك (أنت) ======
         if (fromMe && isOwner) {
-          // لو كتبت جملة فيها كلمات رجوع البوت (مثلاً: "اخليك مع البوت")
           if (containsAny(text, STORE_CONFIG.botResumeKeywords)) {
-            // نجهز البوت ينتظر موافقة العميل
             state.pendingBotConfirm = true;
             state.pendingHumanConfirm = false;
             chatState.set(from, state);
             console.log("⏳ بانتظار موافقة العميل لإرجاع البوت في هذه المحادثة.");
           }
-          // ما نرد عليك كمالك من البوت
           continue;
         }
 
@@ -345,7 +339,6 @@ async function startWhatsApp() {
         // 1) لو كنا ننتظر موافقة "خدمة العملاء؟"
         if (state.pendingHumanConfirm) {
           if (isYes(text)) {
-            // تحويل لخدمة العملاء
             state.mode = "human";
             state.pendingHumanConfirm = false;
             chatState.set(from, state);
@@ -354,7 +347,6 @@ async function startWhatsApp() {
               text: STORE_CONFIG.humanTransferMessage
             });
           } else {
-            // ما يبغى خدمة عملاء -> نرجع لوضع البوت ونكمّل عادي
             state.mode = "bot";
             state.pendingHumanConfirm = false;
             chatState.set(from, state);
@@ -365,7 +357,7 @@ async function startWhatsApp() {
           continue;
         }
 
-        // 2) لو كنا ننتظر موافقة "رجوع للبوت" بعد ما الموظف قال له "اخليك مع البوت؟"
+        // 2) لو كنا ننتظر موافقة "رجوع للبوت"
         if (state.pendingBotConfirm) {
           if (isYes(text)) {
             state.mode = "bot";
@@ -376,7 +368,6 @@ async function startWhatsApp() {
               text: "تم إرجاعك للبوت الذكي (Smart Bot) 🤖✨"
             });
           } else {
-            // رفض يرجع للبوت
             state.mode = "human";
             state.pendingBotConfirm = false;
             chatState.set(from, state);
@@ -388,7 +379,7 @@ async function startWhatsApp() {
           continue;
         }
 
-        // 3) لو العميل طلب خدمة عملاء (بدون ما نكون في وضع تأكيد)
+        // 3) طلب خدمة عملاء
         if (containsAny(text, STORE_CONFIG.humanKeywords)) {
           state.pendingHumanConfirm = true;
           state.pendingBotConfirm = false;
@@ -401,13 +392,13 @@ async function startWhatsApp() {
           continue;
         }
 
-        // 4) لو المحادثة في وضع "خدمة عملاء" -> البوت ما يرد
+        // 4) لو المحادثة عند خدمة العملاء
         if (state.mode === "human") {
           console.log("👤 المحادثة حالياً عند خدمة العملاء، البوت ساكت.");
           continue;
         }
 
-        // 5) أول رسالة تحية
+        // 5) تحية
         if (isGreeting(text)) {
           await sock.sendMessage(from, {
             text: STORE_CONFIG.welcomeReply
@@ -415,7 +406,7 @@ async function startWhatsApp() {
           continue;
         }
 
-        // 6) رد بالذكاء الاصطناعي
+        // 6) رد ذكاء اصطناعي
         const reply = await getAIReply(text);
         await sock.sendMessage(from, { text: reply });
       } catch (err) {
@@ -443,7 +434,6 @@ async function fetchNewZidOrders() {
     });
 
     const orders = res.data?.orders || res.data?.data || [];
-    // نرجع الطلبات اللي ما عالجناها بعد
     return orders.filter((o) => !processedOrders.has(String(o.id)));
   } catch (err) {
     console.error(
@@ -465,7 +455,7 @@ function detectProductKey(order) {
     const match = entries.find(
       ([, p]) => String(p.zidProductId) === pid
     );
-    if (match) return match[0]; // productKey
+    if (match) return match[0];
   }
 
   return null;
@@ -481,7 +471,7 @@ function extractOrderPhone(order) {
   return normalizePhone(phone);
 }
 
-// رسالة تفعيل يرسلها البوت للعميل بعد الشراء
+// رسالة التفعيل
 function buildActivationMessage(sub, product) {
   const exp = new Date(sub.expiresAt);
   const expDate = exp.toLocaleDateString("ar-SA");
@@ -499,7 +489,7 @@ function buildActivationMessage(sub, product) {
   ].join("\n");
 }
 
-// حلقة معالجة طلبات زد
+// حلقة زد
 async function processZidOrdersLoop() {
   if (!ZID_ACCESS_TOKEN) {
     console.log("⏭️ لا يوجد ZID_ACCESS_TOKEN – تعطيل ربط زد");
@@ -520,17 +510,15 @@ async function processZidOrdersLoop() {
       for (const order of newOrders) {
         const id = String(order.id);
 
-        // ✅ هنا الشرط اللي طلبته: لازم الطلب يكون "مدفوع" في قاعدة بيانات زد
+        // ✅ شرط: لازم الطلب يكون مدفوع
         if (!isOrderPaid(order)) {
           console.log(`⏳ الطلب ${id} غير مدفوع بعد، لن يتم تفعيل البوت.`);
-          // ما نعلّمه processed عشان إذا تغيّر لحالة مدفوعة نلتقطه في المرة الجاية
           continue;
         }
 
         const productKey = detectProductKey(order);
 
         if (!productKey) {
-          // ليس منتج بوت -> نعلّم الطلب كمُعالَج ونمشي
           processedOrders.add(id);
           continue;
         }
@@ -546,16 +534,16 @@ async function processZidOrdersLoop() {
           continue;
         }
 
-        // تحديث/إنشاء اشتراك
+        // إنشاء/تحديث اشتراك
         const sub = upsertSubscription({
           phone,
-          type: "whatsapp", // البوت الحالي واتساب فقط
+          type: "whatsapp",
           months: product.months,
           productKey,
           orderId: id
         });
 
-        // إرسال رسالة تفعيل لو واتساب وجاهز
+        // إرسال رسالة تفعيل
         if (waReady && waSock) {
           const jid = phoneToJid(phone);
           if (jid) {
@@ -576,9 +564,7 @@ async function processZidOrdersLoop() {
     }
   };
 
-  // تشغيل أول مرة
   await run();
-  // تكرار
   setInterval(run, ZID_CONFIG.POLL_INTERVAL_MS);
 }
 
