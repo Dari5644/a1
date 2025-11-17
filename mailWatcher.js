@@ -1,13 +1,9 @@
 import { ImapFlow } from "imapflow";
 import { APP_CONFIG } from "./config.js";
-import {
-  addOrder,
-  addActivation,
-  loadActivations
-} from "./storage.js";
+import { addOrder, addActivation, loadActivations } from "./storage.js";
 import crypto from "crypto";
 import QRCode from "qrcode";
-
+ 
 
 const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
 
