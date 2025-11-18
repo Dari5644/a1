@@ -2,229 +2,165 @@
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
-import path from "path";
-import { fileURLToPath } from "url";
-import { APP_CONFIG } from "./config.js";
-import {
-  loadOrders,
-  loadActivations,
-  updateActivation
-} from "./storage.js";
-import { startMailWatcher } from "./mailWatcher.js";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+import axios from "axios";
+import { shopConfig, productsMap } from "./config.js";
+import { addActivation, getActivationByToken, markActivationUsed } from "./db.js";
 
 const app = express();
 app.use(cors());
 app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
 
 const PORT = process.env.PORT || 3000;
+const BASE_URL = process.env.BASE_URL || `http://localhost:${PORT}`;
+const ZID_TOKEN = process.env.ZID_ACCESS_TOKEN;
 
-// ========= Helpers =========
-function requireAdmin(req, res, next) {
-  const auth = req.headers.authorization || "";
-  const token = auth.replace("Basic ", "");
-
-  // Basic auth: base64("username:password")
-  const expectedUser = APP_CONFIG.admin.username;
-  const expectedPass = process.env.ADMIN_PASSWORD || "change-me";
-
-  const expected = Buffer.from(`${expectedUser}:${expectedPass}`).toString(
-    "base64"
-  );
-
-  if (token === expected) {
-    return next();
-  }
-
-  res.setHeader("WWW-Authenticate", 'Basic realm="Smart Bot Admin"');
-  return res.status(401).send("Unauthorized");
+// دالة وهمية لإرسال واتساب – هنا تركّب كود البوت حقك
+async function sendWhatsAppMessage(phone, message) {
+  // TODO: ركب هنا كود Baileys أو أي كود يرسل من رقم 0561340876
+  console.log(`📲 [FAKE WHATSAPP] إرسال رسالة إلى ${phone}:\n${message}\n`);
 }
 
-// ========= Routes =========
+// ✅ استقبال Webhook من زد
+app.post("/zid/webhook", async (req, res) => {
+  try {
+    const body = req.body;
+    console.log("📦 Webhook من زد:", JSON.stringify(body, null, 2));
+
+    // نتاكد إن الحدث فعلاً order.paid
+    if (body.event !== "order.paid") {
+      return res.status(200).send("IGNORED");
+    }
+
+    const order = body.data;
+
+    // تأكيد حالة الدفع من الطلب نفسه لو زد ترسل Status
+    // لو فيه status === "paid" تقدر تتحقق منه هنا أيضاً
+
+    const orderId = order.id;
+    const customerPhone = normalizePhone(order.customer?.phone);
+    const customerName = order.customer?.name || "";
+
+    if (!customerPhone) {
+      console.log("⚠️ لا يوجد رقم عميل صالح في الطلب");
+      return res.status(200).send("NO_PHONE");
+    }
+
+    const items = order.items || [];
+
+    // نسوي تفعيلات لكل منتج من المنتجات المطلوبة
+    for (const item of items) {
+      const productId = item.product_id || item.sku || item.id; // حسب شكل الرد من زد
+      const productConf = productsMap[productId];
+
+      if (!productConf) {
+        console.log("ℹ️ منتج غير معرف في config:", productId);
+        continue;
+      }
+
+      const { botType, durationDays, name: productName } = productConf;
+
+      const activationRecord = await addActivation({
+        phone: customerPhone,
+        customerName,
+        productId,
+        productName,
+        botType,
+        durationDays,
+        orderId
+      });
+
+      const activationUrl = `${BASE_URL}/activate/${activationRecord.token}`;
+      const message = shopConfig.defaultWelcomeMessage(
+        customerName,
+        productName,
+        durationDays,
+        activationUrl
+      );
+
+      await sendWhatsAppMessage(customerPhone, message);
+    }
+
+    res.status(200).send("OK");
+  } catch (err) {
+    console.error("❌ خطأ في Webhook زد:", err.response?.data || err.message);
+    res.status(500).send("ERROR");
+  }
+});
+
+// ✨ صفحة التفعيل
+app.get("/activate/:token", async (req, res) => {
+  try {
+    const { token } = req.params;
+    const record = await getActivationByToken(token);
+
+    if (!record) {
+      return res.status(404).send("رابط التفعيل غير صالح ❌");
+    }
+
+    if (record.used) {
+      return res.status(400).send("تم استخدام رابط التفعيل من قبل ⚠️");
+    }
+
+    const now = new Date();
+    const exp = new Date(record.expiresAt);
+    if (exp < now) {
+      return res.status(400).send("انتهت مدة الاشتراك 😔");
+    }
+
+    // علامة أنه تم “أول تفعيل” (single-use)
+    await markActivationUsed(token);
+
+    res.send(`
+      <html dir="rtl" lang="ar">
+        <head>
+          <meta charset="utf-8" />
+          <title>تفعيل ${shopConfig.botBrand}</title>
+          <style>
+            body { font-family: system-ui, sans-serif; background:#0F172A; color: #E5E7EB; display:flex; align-items:center; justify-content:center; height:100vh; margin:0; }
+            .card { background:#111827; padding:24px 32px; border-radius:16px; box-shadow:0 20px 40px rgba(0,0,0,.6); max-width:420px; text-align:center; }
+            h1 { margin-top:0; font-size:24px; }
+            .badge { display:inline-block; background:#22C55E33; color:#22C55E; padding:4px 12px; border-radius:999px; font-size:12px; margin-bottom:12px;}
+            .bot { color:#38BDF8; font-weight:bold;}
+            .muted { color:#9CA3AF; font-size:13px; margin-top:16px;}
+            .highlight { color:#FACC15; font-weight:bold; }
+          </style>
+        </head>
+        <body>
+          <div class="card">
+            <div class="badge">تم التفعيل بنجاح ✅</div>
+            <h1>مرحباً ${record.customerName || ""}</h1>
+            <p>تم تفعيل اشتراكك في <span class="bot">${shopConfig.botBrand}</span> لنوع البوت:</p>
+            <p><strong>${record.productName}</strong></p>
+            <p>مدة الاشتراك: <span class="highlight">${record.durationDays} يوم</span></p>
+            <p>رقم الواتساب المرتبط: <strong>${record.phone}</strong></p>
+            <p class="muted">يمكنك الآن استخدام البوت. في حال احتجت مساعدة، تواصل معنا على واتساب: ${shopConfig.whatsappNumber}</p>
+          </div>
+        </body>
+      </html>
+    `);
+  } catch (err) {
+    console.error("❌ خطأ في صفحة التفعيل:", err);
+    res.status(500).send("حدث خطأ غير متوقع.");
+  }
+});
+
+// 🔧 دالة مساعدة لتنسيق رقم الجوال (مثال بسيط)
+function normalizePhone(phone) {
+  if (!phone) return null;
+  let p = phone.toString().trim();
+  // نحذف أي مسافات
+  p = p.replace(/\s+/g, "");
+  // لو يبدأ بـ 0 نخليه 9665...
+  if (p.startsWith("0")) p = "966" + p.slice(1);
+  // لو يبدأ بـ + نشيله
+  if (p.startsWith("+")) p = p.slice(1);
+  return p;
+}
 
 app.get("/", (req, res) => {
-  res.send(
-    `<html lang="ar" dir="rtl">
-      <head>
-        <meta charset="utf-8" />
-        <title>${APP_CONFIG.brandName}</title>
-        <style>
-          body { font-family: system-ui, sans-serif; background:#050816; color:#fff; display:flex; align-items:center; justify-content:center; min-height:100vh; }
-          .card { background:#111827; padding:24px 32px; border-radius:18px; box-shadow:0 10px 40px rgba(0,0,0,.6); max-width:560px; width:100%; text-align:center; }
-          h1 { margin-bottom:12px; font-size:24px; }
-          p { color:#9ca3af; line-height:1.7; }
-          a.btn { display:inline-block; margin-top:16px; background:#22c55e; color:#000; padding:10px 18px; border-radius:999px; text-decoration:none; font-weight:600; }
-          a.btn:hover { background:#16a34a; }
-        </style>
-      </head>
-      <body>
-        <div class="card">
-          <h1>${APP_CONFIG.brandName}</h1>
-          <p>جسر ربط بين متجر زد و تفعيلات البوت (Smart Bot) عن طريق البريد الإلكتروني.</p>
-          <p>يتم إنشاء رابط تفعيل و باركود تلقائياً لكل طلب مدفوع.</p>
-          <a href="/admin" class="btn">لوحة الإدارة</a>
-        </div>
-      </body>
-    </html>`
-  );
+  res.send("Smart Bot – تكامل زد مع البوتات ✅");
 });
-
-// قائمة التفعيلات (JSON) – ممكن تستخدمها من موقع خارجي
-app.get("/api/activations", (req, res) => {
-  const activations = loadActivations();
-  res.json(activations);
-});
-
-// قائمة الطلبات (JSON)
-app.get("/api/orders", (req, res) => {
-  const orders = loadOrders();
-  res.json(orders);
-});
-
-// تفعيل برابط – يعمل مرة واحدة فقط
-app.get("/activate/:code", (req, res) => {
-  const code = req.params.code;
-  const activations = loadActivations();
-  const activation = activations.find((a) => a.activationCode === code);
-
-  if (!activation) {
-    return res.status(404).send("رابط التفعيل غير صالح.");
-  }
-
-  const now = new Date();
-  const exp = new Date(activation.expiresAt);
-
-  if (activation.used) {
-    return res.status(400).send("تم استخدام هذا الرابط من قبل.");
-  }
-
-  if (now > exp) {
-    return res.status(400).send("انتهت صلاحية هذا التفعيل.");
-  }
-
-  // نحدّث الحالة إلى used = true
-  updateActivation(activation.id, { used: true, usedAt: now.toISOString() });
-
-  // هنا مكانك تستدعي سكربت تشغيل البوت الفعلي (واتساب/تلغرام/موقع)
-  // مثلاً: callSmartBotProvisioning(activation);
-
-  res.send(
-    `<html lang="ar" dir="rtl">
-      <head>
-        <meta charset="utf-8" />
-        <title>تم تفعيل البوت</title>
-        <style>
-          body { font-family: system-ui, sans-serif; background:#020617; color:#e5e7eb; display:flex; align-items:center; justify-content:center; min-height:100vh; }
-          .wrap { background:#111827; padding:24px 30px; border-radius:16px; max-width:520px; width:100%; box-shadow:0 20px 40px rgba(0,0,0,.7); }
-          h1 { font-size:22px; margin-bottom:10px; color:#22c55e; }
-          p { color:#9ca3af; line-height:1.8; }
-        </style>
-      </head>
-      <body>
-        <div class="wrap">
-          <h1>تم تفعيل اشتراك البوت بنجاح ✅</h1>
-          <p>المنتج: ${activation.productName}</p>
-          <p>رقم الطلب: ${activation.orderId}</p>
-          <p>المدة: حتى ${activation.expiresAt}</p>
-          <p>سيتم الآن تجهيز البوت لك تلقائيًا حسب إعداداتك.</p>
-        </div>
-      </body>
-    </html>`
-  );
-});
-
-// صفحة إدارة بسيطة (تحميها Basic Auth)
-app.get("/admin", requireAdmin, (req, res) => {
-  const activations = loadActivations();
-  const orders = loadOrders();
-
-  const rows = activations
-    .slice()
-    .reverse()
-    .map(
-      (a) => `
-      <tr>
-        <td>${a.orderId}</td>
-        <td>${a.customerPhone || "-"}</td>
-        <td>${a.productName}</td>
-        <td>${a.createdAt}</td>
-        <td>${a.expiresAt}</td>
-        <td>${a.used ? "✅" : "⏳"}</td>
-        <td><a href="${a.activationLink}" target="_blank">الرابط</a></td>
-      </tr>`
-    )
-    .join("");
-
-  res.send(
-    `<html lang="ar" dir="rtl">
-      <head>
-        <meta charset="utf-8" />
-        <title>لوحة الإدارة - ${APP_CONFIG.brandName}</title>
-        <style>
-          body { font-family: system-ui, sans-serif; background:#020617; color:#e5e7eb; margin:0; padding:0; }
-          header { padding:16px 24px; background:#111827; display:flex; justify-content:space-between; align-items:center; position:sticky; top:0; z-index:10; }
-          header h1 { font-size:19px; margin:0; }
-          header span { color:#9ca3af; font-size:13px; }
-          main { padding:18px 24px 32px; }
-          table { width:100%; border-collapse:collapse; margin-top:12px; }
-          th, td { padding:8px 10px; border-bottom:1px solid #1f2937; font-size:13px; text-align:right; }
-          th { background:#0b1120; position:sticky; top:52px; z-index:5; }
-          tr:hover { background:#020617; }
-          a { color:#38bdf8; text-decoration:none; }
-          a:hover { text-decoration:underline; }
-          .pill { display:inline-flex; align-items:center; border-radius:999px; padding:4px 10px; font-size:12px; background:#0f172a; color:#a5b4fc; }
-        </style>
-      </head>
-      <body>
-        <header>
-          <div>
-            <h1>${APP_CONFIG.brandName}</h1>
-            <span>لوحة ربط زد ↔️ سمارت بوت (بريد)</span>
-          </div>
-          <div class="pill">الإجمالي: ${activations.length} تفعيل</div>
-        </header>
-        <main>
-          <h2>التفعيلات</h2>
-          <table>
-            <thead>
-              <tr>
-                <th>رقم الطلب</th>
-                <th>رقم العميل</th>
-                <th>المنتج</th>
-                <th>تاريخ الإنشاء</th>
-                <th>تاريخ الانتهاء</th>
-                <th>الحالة</th>
-                <th>الرابط</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${rows || "<tr><td colspan='7'>لا يوجد تفعيلات بعد.</td></tr>"}
-            </tbody>
-          </table>
-
-          <h2 style="margin-top:32px;">الطلبات الخام (من البريد)</h2>
-          <pre style="background:#020617; padding:12px 14px; border-radius:12px; font-size:12px; white-space:pre; max-height:260px; overflow:auto;">${JSON.stringify(
-            orders.slice(-20),
-            null,
-            2
-          )}</pre>
-        </main>
-      </body>
-    </html>`
-  );
-});
-
-// ========== تشغيل السيرفر + مراقب الإيميل ==========
 
 app.listen(PORT, () => {
-  console.log(`🚀 Smart Bot Zid Bridge يعمل على المنفذ ${PORT}`);
-  console.log(`🔗 ${APP_CONFIG.publicBaseUrl}`);
-});
-
-// تشغيل مراقبة البريد في الخلفية
-startMailWatcher().catch((err) => {
-  console.error("❌ فشل تشغيل مراقب البريد:", err);
+  console.log(`🚀 السيرفر شغال على http://localhost:${PORT}`);
 });
