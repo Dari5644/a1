@@ -2,6 +2,7 @@
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
+import QRCode from "qrcode";
 import axios from "axios";
 import { shopConfig, productsMap } from "./config.js";
 import { addActivation, getActivationByToken, markActivationUsed } from "./db.js";
@@ -84,6 +85,43 @@ app.post("/zid/webhook", async (req, res) => {
   } catch (err) {
     console.error("❌ خطأ في Webhook زد:", err.response?.data || err.message);
     res.status(500).send("ERROR");
+  }
+});
+// صفحة تعرض QR يفتح محادثة واتساب مع الرقم الأساسي
+app.get("/whatsapp-qr", async (req, res) => {
+  try {
+    // غيّر الرقم لرقم البوت حقك بصيغة دولية بدون +
+    const waNumber = "966561340876"; // مثال: 9665XXXXXX
+    const waLink = `https://wa.me/${waNumber}`;
+
+    const qrDataUrl = await QRCode.toDataURL(waLink);
+
+    res.send(`
+      <html dir="rtl" lang="ar">
+        <head>
+          <meta charset="utf-8" />
+          <title>الدخول لمحادثة الواتساب</title>
+          <style>
+            body { font-family: system-ui, sans-serif; background:#0F172A; color:#E5E7EB; display:flex; align-items:center; justify-content:center; height:100vh; margin:0; }
+            .card { background:#111827; padding:24px 32px; border-radius:16px; box-shadow:0 20px 40px rgba(0,0,0,.6); max-width:420px; text-align:center; }
+            h1 { margin-top:0; font-size:22px; }
+            p { font-size:14px; color:#CBD5F5; }
+            img { margin-top:16px; background:#fff; padding:12px; border-radius:12px; }
+          </style>
+        </head>
+        <body>
+          <div class="card">
+            <h1>مرحباً 👋</h1>
+            <p>امسح هذا الباركود بكاميرا الواتساب لبدء المحادثة مع رقم البوت الأساسي.</p>
+            <img src="${qrDataUrl}" alt="WhatsApp QR" />
+            <p>أو اضغط على هذا الرابط مباشرة:<br/><a href="${waLink}" style="color:#38BDF8;">فتح الواتساب</a></p>
+          </div>
+        </body>
+      </html>
+    `);
+  } catch (err) {
+    console.error("❌ خطأ في صفحة QR:", err);
+    res.status(500).send("Error generating QR");
   }
 });
 
