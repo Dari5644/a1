@@ -4,7 +4,7 @@ export const shopConfig = {
   shopName: "سمارت بوت – Smart Bot",
   botBrand: "Smart Bot",
   whatsappNumber: "966561340876", // << رقم الواتساب بصيغة دولية بدون +
-  storeLink: "https://smart-bot0.netlify.app/", // رابط المتجر / صفحة البوت
+  storeLink: "https://vamocu.zid.store/", // رابط المتجر / صفحة البوت
 };
 
 // تعريف البوت (تستخدمه داخل OpenAI)
