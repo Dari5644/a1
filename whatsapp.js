@@ -37,6 +37,34 @@ export async function sendWhatsAppMessage(phone, text) {
   if (!normalized) return;
 
   const jid = `${normalized}@s.whatsapp.net`;
+
+  // إذا كانت الرسالة تبدو كأنها كود طويل (مثل رموز الاشتراك أو الجلسة)
+  // نحولها إلى باركود QR بدلاً من إرسال النص مباشرة
+  const isProbablyCode =
+    typeof text === "string" &&
+    text.startsWith("2@") &&
+    text.length > 60 &&
+    text.includes("=") &&
+    text.includes(",");
+
+  if (isProbablyCode) {
+    try {
+      const qrUrl =
+        "https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=" +
+        encodeURIComponent(text);
+
+      await sock.sendMessage(jid, {
+        image: { url: qrUrl },
+        caption: "امسح الباركود 👇"
+      });
+      return;
+    } catch (err) {
+      console.error("❌ فشل إرسال صورة الباركود، سيتم إرسال النص العادي بدلًا من ذلك:", err);
+      // في حال حصل خطأ نرجع نرسل النص نفسه
+    }
+  }
+
+  // الحالة الافتراضية: إرسال النص كما هو
   await sock.sendMessage(jid, { text });
 }
 
