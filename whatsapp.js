@@ -2,8 +2,8 @@
 import makeWASocket, {
   useMultiFileAuthState,
   fetchLatestBaileysVersion,
-  DisconnectReason
-} import * as baileys from "@whiskeysockets/baileys";
+  DisconnectReason}  
+  from "@whiskeysockets/baileys";
 const makeWASocket = baileys.default;
 
 import pino from "pino";
