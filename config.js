@@ -4,12 +4,12 @@ export const shopConfig = {
   shopName: "سمارت بوت – Smart Bot",
   botBrand: "Smart Bot",
   whatsappNumber: process.env.WHATSAPP_NUMBER || "966561340876",
-  storeLink: process.env.STORE_LINK || "https://smart-bot0.netlify.app/"
+  storeLink: process.env.STORE_LINK || "https://vamocu.zid.store/"
 };
 
 // أرقام الموظفين اللي يوصلهم تنبيه إذا العميل كتب "خدمة العملاء"
 export const supportPhones = [
-  "9665XXXXXXXX", // حط هنا رقمك أو رقم موظف
+  "966554986089", // حط هنا رقمك أو رقم موظف
   // تقدر تضيف أرقام زيادة
   // "9665YYYYYYYY"
 ];
