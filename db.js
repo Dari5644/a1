@@ -12,7 +12,7 @@ async function loadDB() {
     const raw = await fs.readFile(DB_PATH, "utf8");
     return JSON.parse(raw);
   } catch {
-    return { activations: [] }; // شكل مبدئي
+    return { activations: [] };
   }
 }
 
@@ -20,12 +20,25 @@ async function saveDB(db) {
   await fs.writeFile(DB_PATH, JSON.stringify(db, null, 2), "utf8");
 }
 
-// إنشاء سجل تفعيل جديد
-export async function addActivation({ phone, customerName, productId, productName, botType, durationDays, orderId }) {
+// إنشاء تفعيل جديد
+export async function addActivation({
+  phone,
+  customerName,
+  productId,
+  productName,
+  botType,
+  durationDays,
+  orderId
+}) {
   const db = await loadDB();
-  const token = Math.random().toString(36).substring(2, 12) + Date.now().toString(36);
+  const token =
+    Math.random().toString(36).substring(2, 10) +
+    Date.now().toString(36).substring(4);
+
   const now = new Date();
-  const expiresAt = new Date(now.getTime() + durationDays * 24 * 60 * 60 * 1000);
+  const expiresAt = new Date(
+    now.getTime() + durationDays * 24 * 60 * 60 * 1000
+  );
 
   const record = {
     token,
@@ -46,30 +59,24 @@ export async function addActivation({ phone, customerName, productId, productNam
   return record;
 }
 
-// جلب التفعيل من التوكن
 export async function getActivationByToken(token) {
   const db = await loadDB();
-  return db.activations.find(a => a.token === token);
+  return db.activations.find((a) => a.token === token);
 }
 
-// تعليم التوكن كمستخدم
 export async function markActivationUsed(token) {
   const db = await loadDB();
-  const idx = db.activations.findIndex(a => a.token === token);
+  const idx = db.activations.findIndex((a) => a.token === token);
   if (idx !== -1) {
     db.activations[idx].used = true;
     await saveDB(db);
   }
 }
 
-// دالة يقدر البوت يستخدمها للتأكد من الاشتراك
 export async function getActiveSubscriptionByPhone(phone) {
   const db = await loadDB();
   const now = new Date();
   return db.activations.find(
-    a =>
-      a.phone === phone &&
-      !a.used && // لو تبي تخليها تستخدم دائماً ولا single-use، تقدر تشيل هذي
-      new Date(a.expiresAt) > now
+    (a) => a.phone === phone && new Date(a.expiresAt) > now
   );
 }
