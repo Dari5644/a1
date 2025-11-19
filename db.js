@@ -10,7 +10,9 @@ const DB_PATH = path.join(__dirname, "data.json");
 async function loadDB() {
   try {
     const raw = await fs.readFile(DB_PATH, "utf8");
-    return JSON.parse(raw);
+    const obj = JSON.parse(raw);
+    if (!obj.activations) obj.activations = [];
+    return obj;
   } catch {
     return { activations: [] };
   }
@@ -20,7 +22,6 @@ async function saveDB(db) {
   await fs.writeFile(DB_PATH, JSON.stringify(db, null, 2), "utf8");
 }
 
-// إنشاء تفعيل جديد
 export async function addActivation({
   phone,
   customerName,
@@ -51,7 +52,8 @@ export async function addActivation({
     orderId,
     createdAt: now.toISOString(),
     expiresAt: expiresAt.toISOString(),
-    used: false
+    used: false,
+    paused: false // افتراضياً البوت شغال
   };
 
   db.activations.push(record);
@@ -59,24 +61,27 @@ export async function addActivation({
   return record;
 }
 
-export async function getActivationByToken(token) {
-  const db = await loadDB();
-  return db.activations.find((a) => a.token === token);
-}
-
-export async function markActivationUsed(token) {
-  const db = await loadDB();
-  const idx = db.activations.findIndex((a) => a.token === token);
-  if (idx !== -1) {
-    db.activations[idx].used = true;
-    await saveDB(db);
-  }
-}
-
+// ترجع آخر اشتراك نشط لهذا الرقم
 export async function getActiveSubscriptionByPhone(phone) {
   const db = await loadDB();
   const now = new Date();
-  return db.activations.find(
-    (a) => a.phone === phone && new Date(a.expiresAt) > now
-  );
+  const list = db.activations
+    .filter((a) => a.phone === phone && new Date(a.expiresAt) > now)
+    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+  return list[0] || null;
+}
+
+// تحديث حالة البوت (موقّف/شغال) لهذا الرقم
+export async function setBotPausedForPhone(phone, paused) {
+  const db = await loadDB();
+  let changed = false;
+  for (const a of db.activations) {
+    if (a.phone === phone) {
+      a.paused = !!paused;
+      changed = true;
+    }
+  }
+  if (changed) {
+    await saveDB(db);
+  }
 }
