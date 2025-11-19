@@ -3,9 +3,14 @@ import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import QRCode from "qrcode";
-import axios from "axios";
+
 import { shopConfig, productsMap } from "./config.js";
-import { addActivation, getActivationByToken, markActivationUsed } from "./db.js";
+import {
+  addActivation,
+  getActivationByToken,
+  markActivationUsed
+} from "./db.js";
+import { startWhatsApp, sendWhatsAppMessage } from "./whatsapp.js";
 
 const app = express();
 app.use(cors());
@@ -13,45 +18,39 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
 const BASE_URL = process.env.BASE_URL || `http://localhost:${PORT}`;
-const ZID_TOKEN = process.env.ZID_ACCESS_TOKEN;
 
-// دالة وهمية لإرسال واتساب – هنا تركّب كود البوت حقك
-async function sendWhatsAppMessage(phone, message) {
-  console.log(`📲 [FAKE WHATSAPP] إرسال رسالة إلى ${phone}:\n${message}\n`);
+function normalizePhone(phone) {
+  if (!phone) return null;
+  let p = phone.toString().trim();
+  p = p.replace(/\s+/g, "");
+  if (p.startsWith("+")) p = p.slice(1);
+  if (p.startsWith("0")) p = "966" + p.slice(1);
+  return p;
 }
 
-
-// ✅ استقبال Webhook من زد
-app.post("/zid/webhook", async (req, res) => { ... })
-
+// ✅ Webhook من زد: order.paid
+app.post("/zid/webhook", async (req, res) => {
   try {
     const body = req.body;
     console.log("📦 Webhook من زد:", JSON.stringify(body, null, 2));
 
-    // نتاكد إن الحدث فعلاً order.paid
     if (body.event !== "order.paid") {
       return res.status(200).send("IGNORED");
     }
 
     const order = body.data;
-
-    // تأكيد حالة الدفع من الطلب نفسه لو زد ترسل Status
-    // لو فيه status === "paid" تقدر تتحقق منه هنا أيضاً
-
     const orderId = order.id;
     const customerPhone = normalizePhone(order.customer?.phone);
     const customerName = order.customer?.name || "";
+    const items = order.items || [];
 
     if (!customerPhone) {
-      console.log("⚠️ لا يوجد رقم عميل صالح في الطلب");
+      console.log("⚠️ لا يوجد رقم جوال للعميل.");
       return res.status(200).send("NO_PHONE");
     }
 
-    const items = order.items || [];
-
-    // نسوي تفعيلات لكل منتج من المنتجات المطلوبة
     for (const item of items) {
-      const productId = item.product_id || item.sku || item.id; // حسب شكل الرد من زد
+      const productId = item.product_id || item.sku || item.id;
       const productConf = productsMap[productId];
 
       if (!productConf) {
@@ -72,12 +71,14 @@ app.post("/zid/webhook", async (req, res) => { ... })
       });
 
       const activationUrl = `${BASE_URL}/activate/${activationRecord.token}`;
-      const message = shopConfig.defaultWelcomeMessage(
-        customerName,
-        productName,
-        durationDays,
-        activationUrl
-      );
+      const qrUrl = `${BASE_URL}/whatsapp-qr`;
+
+      const message =
+        `مرحباً ${customerName || ""} 👋\n` +
+        `شكراً لطلبك *${productName}* من ${shopConfig.shopName}.\n\n` +
+        `1️⃣ لبدء المحادثة مع رقم البوت، افتح هذا الرابط لمسح باركود الواتساب:\n${qrUrl}\n\n` +
+        `2️⃣ رابط تفعيل الاشتراك (مرة واحدة فقط):\n${activationUrl}\n\n` +
+        `في حال واجهت أي مشكلة، تواصل معنا على هذا الرقم: ${shopConfig.whatsappNumber}.`;
 
       await sendWhatsAppMessage(customerPhone, message);
     }
@@ -88,34 +89,34 @@ app.post("/zid/webhook", async (req, res) => { ... })
     res.status(500).send("ERROR");
   }
 });
-// صفحة تعرض QR يفتح محادثة واتساب مع الرقم الأساسي
+
+// صفحة QR لفتح محادثة الواتساب مع رقم البوت
 app.get("/whatsapp-qr", async (req, res) => {
   try {
-    // غيّر الرقم لرقم البوت حقك بصيغة دولية بدون +
-    const waNumber = "966561340876"; // مثال: 9665XXXXXX
+    const waNumber = shopConfig.whatsappNumber; // 9665...
     const waLink = `https://wa.me/${waNumber}`;
-
     const qrDataUrl = await QRCode.toDataURL(waLink);
 
     res.send(`
       <html dir="rtl" lang="ar">
         <head>
           <meta charset="utf-8" />
-          <title>الدخول لمحادثة الواتساب</title>
+          <title>بدء المحادثة مع Smart Bot</title>
           <style>
             body { font-family: system-ui, sans-serif; background:#0F172A; color:#E5E7EB; display:flex; align-items:center; justify-content:center; height:100vh; margin:0; }
             .card { background:#111827; padding:24px 32px; border-radius:16px; box-shadow:0 20px 40px rgba(0,0,0,.6); max-width:420px; text-align:center; }
             h1 { margin-top:0; font-size:22px; }
             p { font-size:14px; color:#CBD5F5; }
             img { margin-top:16px; background:#fff; padding:12px; border-radius:12px; }
+            a { color:#38BDF8; text-decoration:none; }
           </style>
         </head>
         <body>
           <div class="card">
-            <h1>مرحباً 👋</h1>
-            <p>امسح هذا الباركود بكاميرا الواتساب لبدء المحادثة مع رقم البوت الأساسي.</p>
+            <h1>مرحباً بك في Smart Bot 🤖</h1>
+            <p>امسح هذا الباركود بكاميرا واتساب لبدء المحادثة مع رقم البوت الأساسي.</p>
             <img src="${qrDataUrl}" alt="WhatsApp QR" />
-            <p>أو اضغط على هذا الرابط مباشرة:<br/><a href="${waLink}" style="color:#38BDF8;">فتح الواتساب</a></p>
+            <p>أو اضغط على هذا الرابط مباشرة:<br/><a href="${waLink}">فتح الواتساب الآن</a></p>
           </div>
         </body>
       </html>
@@ -126,7 +127,7 @@ app.get("/whatsapp-qr", async (req, res) => {
   }
 });
 
-// ✨ صفحة التفعيل
+// صفحة تفعيل الاشتراك
 app.get("/activate/:token", async (req, res) => {
   try {
     const { token } = req.params;
@@ -135,7 +136,6 @@ app.get("/activate/:token", async (req, res) => {
     if (!record) {
       return res.status(404).send("رابط التفعيل غير صالح ❌");
     }
-
     if (record.used) {
       return res.status(400).send("تم استخدام رابط التفعيل من قبل ⚠️");
     }
@@ -146,7 +146,6 @@ app.get("/activate/:token", async (req, res) => {
       return res.status(400).send("انتهت مدة الاشتراك 😔");
     }
 
-    // علامة أنه تم “أول تفعيل” (single-use)
     await markActivationUsed(token);
 
     res.send(`
@@ -155,8 +154,8 @@ app.get("/activate/:token", async (req, res) => {
           <meta charset="utf-8" />
           <title>تفعيل ${shopConfig.botBrand}</title>
           <style>
-            body { font-family: system-ui, sans-serif; background:#0F172A; color: #E5E7EB; display:flex; align-items:center; justify-content:center; height:100vh; margin:0; }
-            .card { background:#111827; padding:24px 32px; border-radius:16px; box-shadow:0 20px 40px rgba(0,0,0,.6); max-width:420px; text-align:center; }
+            body { font-family: system-ui, sans-serif; background:#020617; color:#E5E7EB; display:flex; align-items:center; justify-content:center; height:100vh; margin:0; }
+            .card { background:#0F172A; padding:24px 32px; border-radius:16px; box-shadow:0 20px 40px rgba(0,0,0,.6); max-width:420px; text-align:center; }
             h1 { margin-top:0; font-size:24px; }
             .badge { display:inline-block; background:#22C55E33; color:#22C55E; padding:4px 12px; border-radius:999px; font-size:12px; margin-bottom:12px;}
             .bot { color:#38BDF8; font-weight:bold;}
@@ -183,23 +182,14 @@ app.get("/activate/:token", async (req, res) => {
   }
 });
 
-// 🔧 دالة مساعدة لتنسيق رقم الجوال (مثال بسيط)
-function normalizePhone(phone) {
-  if (!phone) return null;
-  let p = phone.toString().trim();
-  // نحذف أي مسافات
-  p = p.replace(/\s+/g, "");
-  // لو يبدأ بـ 0 نخليه 9665...
-  if (p.startsWith("0")) p = "966" + p.slice(1);
-  // لو يبدأ بـ + نشيله
-  if (p.startsWith("+")) p = p.slice(1);
-  return p;
-}
-
 app.get("/", (req, res) => {
-  res.send("Smart Bot – تكامل زد مع البوتات ✅");
+  res.send("Smart Bot – تكامل زد + واتساب ويب ✅");
 });
 
+// تشغيل السيرفر + واتساب
 app.listen(PORT, () => {
   console.log(`🚀 السيرفر شغال على http://localhost:${PORT}`);
+  startWhatsApp().catch((err) =>
+    console.error("❌ خطأ في تشغيل واتساب:", err)
+  );
 });
