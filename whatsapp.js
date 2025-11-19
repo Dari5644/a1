@@ -1,11 +1,12 @@
 // whatsapp.js
-import makeWASocket, {
+import * as baileys from "@whiskeysockets/baileys";
+
+const {
+  default: makeWASocket,
   useMultiFileAuthState,
   fetchLatestBaileysVersion,
-  DisconnectReason}  
-import { default: makeWASocket } from "@whiskeysockets/baileys";
-
-
+  DisconnectReason
+} = baileys;
 import pino from "pino";
 import OpenAI from "openai";
 
