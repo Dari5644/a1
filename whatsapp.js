@@ -3,7 +3,9 @@ import makeWASocket, {
   useMultiFileAuthState,
   fetchLatestBaileysVersion,
   DisconnectReason
-} from "@whiskeysockets/baileys";
+} import * as baileys from "@whiskeysockets/baileys";
+const makeWASocket = baileys.default;
+
 import pino from "pino";
 import OpenAI from "openai";
 
