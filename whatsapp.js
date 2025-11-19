@@ -191,30 +191,33 @@ export async function startWhatsApp() {
 
   sock.ev.on("creds.update", saveCreds);
 
- sock.ev.on("connection.update", (update) => {
+sock.ev.on("connection.update", (update) => {
     const { connection, lastDisconnect, qr } = update;
-    
-    // التعديل هنا: استخدام مكتبة qrcode-terminal
+
     if (qr) {
-        console.log("🔵 امسح الـ QR من واتساب للجوال الأساسي:");
-        // استخدام generate لطباعة رمز QR في الـ Terminal مباشرة
-        qrcode.generate(qr, { small: true }); 
-        // المَعْلَمة { small: true } تجعل الـ QR Code أصغر وأسهل للمسح في معظم الشاشات
+        console.log("\n======== QR CODE ========\n");
+        console.log(qr);
+        console.log("\n==========================\n");
+        // تطبع QR كنص فقط بدون مكتبة qrcode
     }
-    
+
     if (connection === "open") {
         console.log("✅ تم الاتصال بواتساب بنجاح.");
-    } else if (connection === "close") {
+    }
+
+    if (connection === "close") {
         const reason = lastDisconnect?.error?.output?.statusCode;
         console.log("❌ الاتصال انقطع، السبب:", reason);
+
         if (reason !== DisconnectReason.loggedOut) {
             console.log("🔄 إعادة محاولة الاتصال...");
-            startWhatsApp().catch(console.error);
+            startWhatsApp();
         } else {
-            console.log("تم تسجيل خروج الجوال من واتساب ويب، امسح QR من جديد.");
+            console.log("⚠️ تم تسجيل الخروج. امسح QR من جديد.");
         }
     }
 });
+
 
   sock.ev.on("messages.upsert", async (m) => {
     const msg = m.messages?.[0];
