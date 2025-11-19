@@ -17,12 +17,13 @@ const ZID_TOKEN = process.env.ZID_ACCESS_TOKEN;
 
 // دالة وهمية لإرسال واتساب – هنا تركّب كود البوت حقك
 async function sendWhatsAppMessage(phone, message) {
-  // TODO: ركب هنا كود Baileys أو أي كود يرسل من رقم 0561340876
   console.log(`📲 [FAKE WHATSAPP] إرسال رسالة إلى ${phone}:\n${message}\n`);
 }
 
+
 // ✅ استقبال Webhook من زد
-app.post("/zid/webhook", async (req, res) => {
+app.post("/zid/webhook", async (req, res) => { ... })
+
   try {
     const body = req.body;
     console.log("📦 Webhook من زد:", JSON.stringify(body, null, 2));
