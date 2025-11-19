@@ -1,12 +1,9 @@
 // whatsapp.js
-import * as baileys from "@whiskeysockets/baileys";
-
-const {
-  default: makeWASocket,
+import makeWASocket, {
   useMultiFileAuthState,
   fetchLatestBaileysVersion,
   DisconnectReason
-} = baileys;
+} from "@whiskeysockets/baileys";
 import pino from "pino";
 import OpenAI from "openai";
 
@@ -62,7 +59,10 @@ export async function sendWhatsAppMessage(phone, text) {
       });
       return;
     } catch (err) {
-      console.error("❌ فشل إرسال صورة الباركود، سيتم إرسال النص العادي بدلًا من ذلك:", err);
+      console.error(
+        "❌ فشل إرسال صورة الباركود، سيتم إرسال النص العادي بدلًا من ذلك:",
+        err
+      );
       // في حال حصل خطأ نرجع نرسل النص نفسه
     }
   }
@@ -94,9 +94,7 @@ async function notifySupportAboutCustomer(phone, lastMessage) {
   const text =
     `📢 عميل طلب خدمة العملاء.\n` +
     `رقم العميل: ${phone}\n` +
-    (lastMessage
-      ? `آخر رسالة من العميل:\n"${lastMessage}"`
-      : "") +
+    (lastMessage ? `آخر رسالة من العميل:\n"${lastMessage}"` : "") +
     `\n\nادخل على واتساب من رقمك وتواصل معه مباشرة. (البوت متوقف حالياً لهذا العميل).`;
 
   for (const sp of supportPhones) {
@@ -111,13 +109,12 @@ async function handleIncomingMessage(fromJid, text, fromMe = false) {
 
   // احنا نهتم فقط برسائل العملاء (fromMe = false)
   if (fromMe) {
-    // تقدر مستقبلاً تسمح للموظف بكلمة خاصة ترجع البوت، لكن الآن نخلي التحكم من العميل نفسه فقط.
     return;
   }
 
   console.log("📩 رسالة من:", phone, "النص:", msg);
 
-  // 1) أوامر "مساعدة" دائماً تشتغل حتى لغير المشترك (بس توضح له)
+  // 1) أوامر "مساعدة"
   if (
     msg === "مساعدة" ||
     msg === "HELP" ||
@@ -222,33 +219,32 @@ export async function startWhatsApp() {
 
   sock.ev.on("creds.update", saveCreds);
 
-sock.ev.on("connection.update", (update) => {
+  sock.ev.on("connection.update", (update) => {
     const { connection, lastDisconnect, qr } = update;
 
     if (qr) {
-        console.log("\n======== QR CODE ========\n");
-        console.log(qr);
-        console.log("\n==========================\n");
-        // تطبع QR كنص فقط بدون مكتبة qrcode
+      console.log("\n======== QR CODE ========\n");
+      console.log(qr);
+      console.log("\n==========================\n");
+      // تطبع QR كنص فقط في التيرمنال
     }
 
     if (connection === "open") {
-        console.log("✅ تم الاتصال بواتساب بنجاح.");
+      console.log("✅ تم الاتصال بواتساب بنجاح.");
     }
 
     if (connection === "close") {
-        const reason = lastDisconnect?.error?.output?.statusCode;
-        console.log("❌ الاتصال انقطع، السبب:", reason);
+      const reason = lastDisconnect?.error?.output?.statusCode;
+      console.log("❌ الاتصال انقطع، السبب:", reason);
 
-        if (reason !== DisconnectReason.loggedOut) {
-            console.log("🔄 إعادة محاولة الاتصال...");
-            startWhatsApp();
-        } else {
-            console.log("⚠️ تم تسجيل الخروج. امسح QR من جديد.");
-        }
+      if (reason !== DisconnectReason.loggedOut) {
+        console.log("🔄 إعادة محاولة الاتصال...");
+        startWhatsApp();
+      } else {
+        console.log("⚠️ تم تسجيل الخروج. امسح QR من جديد.");
+      }
     }
-});
-
+  });
 
   sock.ev.on("messages.upsert", async (m) => {
     const msg = m.messages?.[0];
