@@ -9,8 +9,8 @@ import { shopConfig } from "./config.js";
 import { getActiveSubscriptionByPhone } from "./db.js";
 
 // لو حاب تستخدم OpenAI مستقبلاً، تقدر تضيفه هنا
-// import OpenAI from "openai";
-// import { BOT_SYSTEM_PROMPT } from "./config.js";
+ import OpenAI from "openai";
+ import { BOT_SYSTEM_PROMPT } from "./config.js";
 
 let sock = null;
 
@@ -98,7 +98,7 @@ async function handleIncomingMessage(fromJid, text) {
   await sendWhatsAppMessage(phone, reply);
 
   // مثال لو ربطت OpenAI مستقبلاً:
-  /*
+  
   const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
   const completion = await client.chat.completions.create({
     model: "gpt-4.1-mini",
@@ -111,7 +111,7 @@ async function handleIncomingMessage(fromJid, text) {
   if (aiReply) {
     await sendWhatsAppMessage(phone, aiReply);
   }
-  */
+  
 }
 
 export async function startWhatsApp() {
