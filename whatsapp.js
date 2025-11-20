@@ -1,7 +1,9 @@
 // whatsapp.js
-// whatsapp.js
-
-import * as baileys from "@whiskeysockets/baileys";
+import makeWASocket, {
+  useMultiFileAuthState,
+  fetchLatestBaileysVersion,
+  DisconnectReason
+} from "@whiskeysockets/baileys";
 import pino from "pino";
 import OpenAI from "openai";
 
@@ -11,15 +13,7 @@ import {
   setBotPausedForPhone
 } from "./db.js";
 
-const {
-  default: makeWASocket,
-  useMultiFileAuthState,
-  fetchLatestBaileysVersion,
-  DisconnectReason
-} = baileys;
-
 let sock = null;
-
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
@@ -43,37 +37,6 @@ export async function sendWhatsAppMessage(phone, text) {
   if (!normalized) return;
 
   const jid = `${normalized}@s.whatsapp.net`;
-
-  // إذا كانت الرسالة تبدو كأنها كود طويل (مثل رموز الاشتراك أو الجلسة)
-  // نحولها إلى باركود QR بدلاً من إرسال النص مباشرة
-  const isProbablyCode =
-    typeof text === "string" &&
-    text.startsWith("2@") &&
-    text.length > 60 &&
-    text.includes("=") &&
-    text.includes(",");
-
-  if (isProbablyCode) {
-    try {
-      const qrUrl =
-        "https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=" +
-        encodeURIComponent(text);
-
-      await sock.sendMessage(jid, {
-        image: { url: qrUrl },
-        caption: "امسح الباركود 👇"
-      });
-      return;
-    } catch (err) {
-      console.error(
-        "❌ فشل إرسال صورة الباركود، سيتم إرسال النص العادي بدلًا من ذلك:",
-        err
-      );
-      // في حال حصل خطأ نرجع نرسل النص نفسه
-    }
-  }
-
-  // الحالة الافتراضية: إرسال النص كما هو
   await sock.sendMessage(jid, { text });
 }
 
@@ -100,7 +63,9 @@ async function notifySupportAboutCustomer(phone, lastMessage) {
   const text =
     `📢 عميل طلب خدمة العملاء.\n` +
     `رقم العميل: ${phone}\n` +
-    (lastMessage ? `آخر رسالة من العميل:\n"${lastMessage}"` : "") +
+    (lastMessage
+      ? `آخر رسالة من العميل:\n"${lastMessage}"`
+      : "") +
     `\n\nادخل على واتساب من رقمك وتواصل معه مباشرة. (البوت متوقف حالياً لهذا العميل).`;
 
   for (const sp of supportPhones) {
@@ -115,12 +80,13 @@ async function handleIncomingMessage(fromJid, text, fromMe = false) {
 
   // احنا نهتم فقط برسائل العملاء (fromMe = false)
   if (fromMe) {
+    // تقدر مستقبلاً تسمح للموظف بكلمة خاصة ترجع البوت، لكن الآن نخلي التحكم من العميل نفسه فقط.
     return;
   }
 
   console.log("📩 رسالة من:", phone, "النص:", msg);
 
-  // 1) أوامر "مساعدة"
+  // 1) أوامر "مساعدة" دائماً تشتغل حتى لغير المشترك (بس توضح له)
   if (
     msg === "مساعدة" ||
     msg === "HELP" ||
@@ -216,7 +182,22 @@ export async function startWhatsApp() {
 
   console.log("📦 Baileys version:", version);
 
-  sock = makeWASocket({
+  // حل مشكلة makeWASocket.is not a function بين CJS و ESM
+  const makeSocket =
+    typeof makeWASocket === "function"
+      ? makeWASocket
+      : makeWASocket && typeof makeWASocket.default === "function"
+      ? makeWASocket.default
+      : null;
+
+  if (!makeSocket) {
+    console.error(
+      "❌ لا يمكن العثور على دالة makeWASocket من مكتبة @whiskeysockets/baileys. تحقق من الإصدار أو من طريقة الاستيراد."
+    );
+    return;
+  }
+
+  sock = makeSocket({
     version,
     auth: state,
     printQRInTerminal: true, // يطلع QR في الـ CMD عشان تربط الرقم مرة واحدة
@@ -229,9 +210,13 @@ export async function startWhatsApp() {
     const { connection, lastDisconnect, qr } = update;
 
     if (qr) {
-      console.log("\n======== QR CODE ========\n");
+      console.log("
+======== QR CODE ========
+");
       console.log(qr);
-      console.log("\n==========================\n");
+      console.log("
+==========================
+");
       // تطبع QR كنص فقط في التيرمنال
     }
 
@@ -267,3 +252,4 @@ export async function startWhatsApp() {
     await handleIncomingMessage(from, text, isFromMe);
   });
 }
+
