@@ -1,3 +1,4 @@
+// db.js
 import sqlite3 from "sqlite3";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -100,15 +101,6 @@ export function upsertContact(wa_id, display_name) {
   });
 }
 
-export function getContactByWaId(wa_id) {
-  return new Promise((resolve, reject) => {
-    db.get("SELECT * FROM contacts WHERE wa_id = ?", [wa_id], (err, row) => {
-      if (err) return reject(err);
-      resolve(row || null);
-    });
-  });
-}
-
 export function getContacts() {
   return new Promise((resolve, reject) => {
     db.all(
@@ -123,6 +115,35 @@ export function getContacts() {
       (err, rows) => {
         if (err) return reject(err);
         resolve(rows || []);
+      }
+    );
+  });
+}
+
+export function getMessagesByContact(contactId) {
+  return new Promise((resolve, reject) => {
+    db.all(
+      "SELECT * FROM messages WHERE contact_id = ? ORDER BY id ASC",
+      [contactId],
+      (err, rows) => {
+        if (err) return reject(err);
+        resolve(rows || []);
+      }
+    );
+  });
+}
+
+export function insertMessage(contactId, fromMe, body, type, timestamp) {
+  return new Promise((resolve, reject) => {
+    db.run(
+      `
+      INSERT INTO messages(contact_id, from_me, body, type, timestamp)
+      VALUES(?, ?, ?, ?, ?)
+    `,
+      [contactId, fromMe ? 1 : 0, body, type || "text", timestamp],
+      function (err) {
+        if (err) return reject(err);
+        resolve(this.lastID);
       }
     );
   });
@@ -150,34 +171,5 @@ export function deleteContact(contactId) {
         resolve();
       });
     });
-  });
-}
-
-export function insertMessage(contactId, fromMe, body, type, timestamp) {
-  return new Promise((resolve, reject) => {
-    db.run(
-      `
-      INSERT INTO messages(contact_id, from_me, body, type, timestamp)
-      VALUES(?, ?, ?, ?, ?)
-    `,
-      [contactId, fromMe ? 1 : 0, body, type || "text", timestamp],
-      function (err) {
-        if (err) return reject(err);
-        resolve(this.lastID);
-      }
-    );
-  });
-}
-
-export function getMessagesByContact(contactId) {
-  return new Promise((resolve, reject) => {
-    db.all(
-      "SELECT * FROM messages WHERE contact_id = ? ORDER BY id ASC",
-      [contactId],
-      (err, rows) => {
-        if (err) return reject(err);
-        resolve(rows || []);
-      }
-    );
   });
 }
