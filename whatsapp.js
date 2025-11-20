@@ -1,9 +1,7 @@
 // whatsapp.js
-import makeWASocket, {
-  useMultiFileAuthState,
-  fetchLatestBaileysVersion,
-  DisconnectReason
-} from "@whiskeysockets/baileys";
+// whatsapp.js
+
+import * as baileys from "@whiskeysockets/baileys";
 import pino from "pino";
 import OpenAI from "openai";
 
@@ -13,7 +11,15 @@ import {
   setBotPausedForPhone
 } from "./db.js";
 
+const {
+  default: makeWASocket,
+  useMultiFileAuthState,
+  fetchLatestBaileysVersion,
+  DisconnectReason
+} = baileys;
+
 let sock = null;
+
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
