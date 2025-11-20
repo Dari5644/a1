@@ -210,13 +210,9 @@ export async function startWhatsApp() {
     const { connection, lastDisconnect, qr } = update;
 
     if (qr) {
-      console.log("
-======== QR CODE ========
-");
+      console.log("======== QR CODE ========");
       console.log(qr);
-      console.log("
-==========================
-");
+      console.log("==========================");
       // تطبع QR كنص فقط في التيرمنال
     }
 
