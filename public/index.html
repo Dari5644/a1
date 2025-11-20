@@ -1,125 +1,131 @@
 <!DOCTYPE html>
 <html lang="ar" dir="rtl">
-<head>
-  <meta charset="UTF-8" />
-  <title>لوحة Smart Bot</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <link rel="stylesheet" href="styles.css" />
-</head>
-<body>
-  <div id="app">
-    <header class="top-bar">
-      <div class="left-group">
+  <head>
+    <meta charset="UTF-8" />
+    <title>لوحة Smart Bot – n8n</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <header class="top-bar">
         <div class="bot-info">
           <img id="bot-avatar" class="bot-avatar" src="" alt="Bot Avatar" />
-          <div class="bot-text">
+          <div>
             <div id="bot-name" class="bot-name">Smart Bot</div>
-            <div class="bot-subtitle">لوحة تحكم واتساب</div>
+            <div class="bot-subtitle">لوحة محادثات واتساب (n8n)</div>
           </div>
         </div>
-      </div>
-      <div class="right-group">
-        <button id="owner-btn" class="btn owner">
-          المالك: <span class="owner-handle">Mmaa3551</span>
-        </button>
-        <button id="settings-btn" class="btn secondary">الإعدادات</button>
-      </div>
-    </header>
+        <!-- زر المالك بدون إظهار الرقم أو الباس -->
+        <button id="owner-btn" class="btn secondary">المالك</button>
+      </header>
 
-    <main class="layout">
-      <aside class="sidebar">
-        <div class="sidebar-header">
-          <div class="title">المحادثات</div>
-          <button id="new-chat-btn" class="btn small primary">محادثة جديدة</button>
-        </div>
-        <div class="search-box">
-          <input id="search-input" type="text" placeholder="بحث باسم أو رقم..." />
-        </div>
-        <div id="contacts-list" class="contacts-list"></div>
-      </aside>
-
-      <section class="chat-pane">
-        <div id="chat-placeholder" class="chat-placeholder">
-          <div class="placeholder-card">
-            <h2>مرحباً بك في لوحة Smart Bot</h2>
-            <p>اختر محادثة من القائمة أو ابدأ محادثة جديدة مع عميل.</p>
+      <main class="layout">
+        <aside class="sidebar">
+          <div class="sidebar-header">
+            <div class="title">المحادثات</div>
+            <button id="new-chat-btn" class="btn small">محادثة جديدة</button>
           </div>
-        </div>
+          <div class="search-box">
+            <input
+              id="search-input"
+              type="text"
+              placeholder="بحث باسم أو رقم..."
+            />
+          </div>
+          <div id="contacts-list" class="contacts-list"></div>
+        </aside>
 
-        <div id="chat-container" class="chat-container hidden">
-          <div class="chat-header">
-            <div class="chat-contact">
-              <div id="chat-contact-name" class="chat-contact-name"></div>
-              <div id="chat-contact-number" class="chat-contact-number"></div>
-            </div>
-            <div class="chat-header-actions">
-              <div class="toggle-wrap">
+        <section class="chat-pane">
+          <div id="chat-placeholder" class="chat-placeholder">
+            اختر محادثة من القائمة أو أنشئ محادثة جديدة
+          </div>
+
+          <div id="chat-container" class="chat-container hidden">
+            <div class="chat-header">
+              <div>
+                <div
+                  id="chat-contact-name"
+                  class="chat-contact-name"
+                ></div>
+                <div
+                  id="chat-contact-number"
+                  class="chat-contact-number"
+                ></div>
+              </div>
+              <div class="chat-header-actions">
                 <label class="switch">
                   <input type="checkbox" id="bot-toggle" />
                   <span class="slider"></span>
                 </label>
-                <span class="switch-label">إيقاف / تشغيل البوت</span>
+                <span class="switch-label">إيقاف / تشغيل البوت (علامة فقط)</span>
+                <button
+                  id="delete-contact-btn"
+                  class="btn danger small"
+                >
+                  حذف المحادثة
+                </button>
               </div>
-              <button id="delete-contact-btn" class="btn danger small">حذف المحادثة</button>
             </div>
+
+            <div id="messages-container" class="messages-container"></div>
+
+            <form id="message-form" class="message-form">
+              <input
+                id="message-input"
+                type="text"
+                placeholder="اكتب رسالة..."
+                autocomplete="off"
+              />
+              <button type="submit" class="btn primary">إرسال</button>
+            </form>
           </div>
+        </section>
+      </main>
+    </div>
 
-          <div id="messages-container" class="messages-container"></div>
+    <!-- إعدادات المالك -->
+    <div id="settings-modal" class="modal hidden">
+      <div class="modal-content">
+        <h2>إعدادات البوت</h2>
 
-          <form id="message-form" class="message-form">
-            <input
-              id="message-input"
-              type="text"
-              placeholder="اكتب رسالة..."
-              autocomplete="off"
-            />
-            <button type="submit" class="btn primary send-btn">إرسال</button>
-          </form>
+        <label>اسم البوت</label>
+        <input id="settings-bot-name" type="text" />
+
+        <label>رفع صورة من الجهاز</label>
+        <input id="settings-avatar-file" type="file" accept="image/*" />
+
+        <label>رابط صورة البوت (اختياري)</label>
+        <input id="settings-bot-avatar" type="text" />
+
+        <div class="modal-actions">
+          <button id="settings-save-btn" class="btn primary">حفظ</button>
+          <button id="settings-cancel-btn" class="btn secondary">إغلاق</button>
         </div>
-      </section>
-    </main>
-  </div>
-
-  <!-- Settings Modal -->
-  <div id="settings-modal" class="modal hidden">
-    <div class="modal-content">
-      <h2>إعدادات البوت</h2>
-      <label>اسم البوت</label>
-      <input id="settings-bot-name" type="text" />
-
-      <label>تحميل صورة البوت (avatar)</label>
-      <input id="settings-bot-avatar-file" type="file" accept="image/*" />
-
-      <label>أو رابط صورة البوت (اختياري)</label>
-      <input id="settings-bot-avatar-url" type="text" placeholder="https://..." />
-
-      <div class="modal-actions">
-        <button id="settings-save-btn" class="btn primary">حفظ</button>
-        <button id="settings-cancel-btn" class="btn secondary">إغلاق</button>
       </div>
     </div>
-  </div>
 
-  <!-- New Chat Modal -->
-  <div id="newchat-modal" class="modal hidden">
-    <div class="modal-content">
-      <h2>محادثة جديدة</h2>
-      <label>رقم الواتساب (مثال: 9665xxxxxxx)</label>
-      <input id="newchat-waid" type="text" />
-
-      <label>اسم العميل (اختياري)</label>
-      <input id="newchat-name" type="text" />
-
-      <label>أول رسالة (اختيارية)</label>
-      <input id="newchat-first-message" type="text" />
-
-      <div class="modal-actions">
-        <button id="newchat-create-btn" class="btn primary">بدء المحادثة</button>
-        <button id="newchat-cancel-btn" class="btn secondary">إلغاء</button>
+    <!-- محادثة جديدة -->
+    <div id="newchat-modal" class="modal hidden">
+      <div class="modal-content">
+        <h2>محادثة جديدة</h2>
+        <label>رقم الواتساب (مثال: 9665xxxxxx)</label>
+        <input id="newchat-waid" type="text" />
+        <label>اسم العميل (اختياري)</label>
+        <input id="newchat-name" type="text" />
+        <label>أول رسالة (اختيارية)</label>
+        <input id="newchat-first-message" type="text" />
+        <div class="modal-actions">
+          <button id="newchat-create-btn" class="btn primary">
+            بدء المحادثة
+          </button>
+          <button id="newchat-cancel-btn" class="btn secondary">
+            إلغاء
+          </button>
+        </div>
       </div>
     </div>
-  </div>
 
-  <script src="app.js"></script>
-</body>
+    <script src="app.js"></script>
+  </body>
 </html>
