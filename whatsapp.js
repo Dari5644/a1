@@ -4,7 +4,6 @@ import makeWASocket, {
   fetchLatestBaileysVersion,
   DisconnectReason
 } from "@whiskeysockets/baileys";
-
 import pino from "pino";
 import OpenAI from "openai";
 
@@ -14,18 +13,12 @@ import {
   setBotPausedForPhone
 } from "./db.js";
 
-// =========================
-//  GLOBAL
-// =========================
 let sock = null;
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 });
 
-// =========================
-// NORMALIZE PHONE
-// =========================
 function normalizePhone(phone) {
   if (!phone) return null;
   let p = phone.toString().trim();
@@ -35,52 +28,49 @@ function normalizePhone(phone) {
   return p;
 }
 
-// =========================
-// SEND WHATSAPP MESSAGE
-// =========================
 export async function sendWhatsAppMessage(phone, text) {
   if (!sock) {
     console.error("❌ WhatsApp socket غير جاهز بعد.");
     return;
   }
-
   const normalized = normalizePhone(phone);
   if (!normalized) return;
 
   const jid = `${normalized}@s.whatsapp.net`;
 
-  // هل هو كود طويل؟ → نحوله QR تلقائياً
+  // إذا كانت الرسالة تبدو كأنها كود طويل (مثل رموز الاشتراك أو الجلسة)
+  // نحولها إلى باركود QR بدلاً من إرسال النص مباشرة
   const isProbablyCode =
     typeof text === "string" &&
     text.startsWith("2@") &&
-    text.length > 50 &&
+    text.length > 60 &&
     text.includes("=") &&
     text.includes(",");
 
   if (isProbablyCode) {
     try {
       const qrUrl =
-        "https://api.qrserver.com/v1/create-qr-code/?size=500x500&data=" +
+        "https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=" +
         encodeURIComponent(text);
 
       await sock.sendMessage(jid, {
         image: { url: qrUrl },
-        caption: "📦 هذا هو باركود الاستلام 👇"
+        caption: "امسح الباركود 👇"
       });
-
       return;
     } catch (err) {
-      console.error("❌ فشل إرسال صورة الباركود:", err);
+      console.error(
+        "❌ فشل إرسال صورة الباركود، سيتم إرسال النص العادي بدلًا من ذلك:",
+        err
+      );
+      // في حال حصل خطأ نرجع نرسل النص نفسه
     }
   }
 
-  // إرسال نص عادي
+  // الحالة الافتراضية: إرسال النص كما هو
   await sock.sendMessage(jid, { text });
 }
 
-// =========================
-// ASK AI
-// =========================
 async function askAI(userText) {
   try {
     const completion = await openai.chat.completions.create({
@@ -91,78 +81,82 @@ async function askAI(userText) {
       ]
     });
 
-    return (
-      completion.choices?.[0]?.message?.content?.trim() ||
-      "حدث خطأ بسيط، حاول مرة ثانية 🙏"
-    );
+    const reply = completion.choices?.[0]?.message?.content?.trim();
+    return reply || "حصل خطأ بسيط، حاول تكتب سؤالك مرة ثانية 🙏";
   } catch (err) {
-    console.error("❌ خطأ OpenAI:", err);
-    return "حصل خلل مؤقت في خدمة الذكاء الاصطناعي.";
+    console.error("❌ خطأ من OpenAI:", err?.response?.data || err.message);
+    return "حصل خلل مؤقت في خدمة الذكاء الاصطناعي، حاول بعد قليل 🙏";
   }
 }
 
-// =========================
-// SUPPORT NOTIFY
-// =========================
 async function notifySupportAboutCustomer(phone, lastMessage) {
   if (!supportPhones || supportPhones.length === 0) return;
-
-  const msg =
+  const text =
     `📢 عميل طلب خدمة العملاء.\n` +
     `رقم العميل: ${phone}\n` +
-    (lastMessage ? `آخر رسالة:\n"${lastMessage}"` : "") +
-    `\n\nتواصل معه الآن، البوت موقّف لهذا العميل.`;
+    (lastMessage ? `آخر رسالة من العميل:\n"${lastMessage}"` : "") +
+    `\n\nادخل على واتساب من رقمك وتواصل معه مباشرة. (البوت متوقف حالياً لهذا العميل).`;
 
   for (const sp of supportPhones) {
-    await sendWhatsAppMessage(sp, msg);
+    await sendWhatsAppMessage(sp, text);
   }
 }
 
-// =========================
-// HANDLE INCOMING
-// =========================
 async function handleIncomingMessage(fromJid, text, fromMe = false) {
-  const phone = fromJid.split("@")[0];
+  const phone = fromJid.split("@")[0]; // 9665...
   const msg = (text || "").trim();
   const lower = msg.toLowerCase();
 
-  if (fromMe) return;
+  // احنا نهتم فقط برسائل العملاء (fromMe = false)
+  if (fromMe) {
+    return;
+  }
 
-  console.log("📩 رسالة من:", phone, "→", msg);
+  console.log("📩 رسالة من:", phone, "النص:", msg);
 
-  // 1) أمر "مساعدة"
+  // 1) أوامر "مساعدة"
   if (
     msg === "مساعدة" ||
     msg === "HELP" ||
     lower === "help" ||
-    lower === "menu"
+    lower === "menu" ||
+    lower === "help me"
   ) {
     const sub = await getActiveSubscriptionByPhone(phone);
-
     if (!sub) {
-      return sendWhatsAppMessage(
-        phone,
-        `هذا البوت مخصص فقط لعملاء Smart Bot.\nللاشتراك:\n${shopConfig.storeLink}`
-      );
+      const reply =
+        "هذا البوت مخصص فقط لعملاء *Smart Bot* المشتركين في باقات البوتات 🌟\n\n" +
+        "للاشتراك أو التجديد، تفضل بزيارة المتجر:\n" +
+        shopConfig.storeLink +
+        "\n\n" +
+        "🇬🇧 This bot is dedicated to *Smart Bot* subscribed customers.\n" +
+        "To subscribe or renew, please visit our store link above.";
+      return sendWhatsAppMessage(phone, reply);
+    } else {
+      const reply =
+        "📋 *قائمة المساعدة – Smart Bot*\n\n" +
+        "• اكتب سؤالك مباشرة عن أي شيء يخص البوتات والخدمات وسأجيبك بالذكاء الاصطناعي 🤖\n" +
+        "• للتحويل إلى خدمة العملاء، اكتب: خدمة العملاء\n" +
+        "• لإعادة تشغيل البوت بعد التحويل، اكتب: تشغيل البوت";
+      return sendWhatsAppMessage(phone, reply);
     }
-
-    return sendWhatsAppMessage(
-      phone,
-      "📋 قائمة المساعدة:\n• الذكاء الاصطناعي\n• خدمة العملاء\n• تشغيل البوت"
-    );
   }
 
-  // 2) اشتراك؟
+  // 2) التحقق من أن عنده اشتراك نشط
   const sub = await getActiveSubscriptionByPhone(phone);
-
   if (!sub) {
-    return sendWhatsAppMessage(
-      phone,
-      `مرحباً 👋\nهذا البوت مخصص فقط لعملاء Smart Bot.\nرابط المتجر:\n${shopConfig.storeLink}`
-    );
+    const reply =
+      "مرحباً 👋\n" +
+      "هذا البوت مخصص فقط لعملاء *Smart Bot* المشتركين في خدمات البوتات.\n\n" +
+      "للاشتراك أو تجربة الخدمات، تفضل بزيارة المتجر:\n" +
+      shopConfig.storeLink +
+      "\n\n" +
+      "🇬🇧 Hi! This bot serves *Smart Bot* subscribed customers only.\n" +
+      "Please visit our store to subscribe.";
+    return sendWhatsAppMessage(phone, reply);
   }
 
-  // 3) توقف البوت
+  // 3) أمر التحويل إلى خدمة العملاء
   if (
     msg.includes("خدمة العملاء") ||
     lower.includes("support") ||
@@ -170,48 +164,100 @@ async function handleIncomingMessage(fromJid, text, fromMe = false) {
   ) {
     await setBotPausedForPhone(phone, true);
 
-    await sendWhatsAppMessage(
-      phone,
-      "تم تحويلك إلى خدمة العملاء.\nاكتب: تشغيل البوت للرجوع."
-    );
+    const reply =
+      "تم تحويلك إلى خدمة العملاء 👨‍💼👩‍💼\n" +
+      "سيتوقف البوت عن الرد مؤقتاً حتى يخدمك أحد موظفينا.\n" +
+      "إذا حاب ترجع للرد الآلي بالذكاء الاصطناعي، اكتب: تشغيل البوت";
+    await sendWhatsAppMessage(phone, reply);
 
     await notifySupportAboutCustomer(phone, msg);
     return;
   }
 
-  // 4) تشغيل البوت
+  // 4) أمر إعادة تشغيل البوت
   if (
     msg.includes("تشغيل البوت") ||
-    lower.includes("resume") ||
+    msg.includes("رجع البوت") ||
+    lower.includes("resume bot") ||
     lower.includes("start bot")
   ) {
     await setBotPausedForPhone(phone, false);
-    return sendWhatsAppMessage(
-      phone,
-      "تم تشغيل البوت.\nاكتب سؤالك الآن 🤖."
-    );
+    const reply =
+      "تم إعادة تشغيل البوت 🤖✅\n" +
+      "اكتب سؤالك الآن، وسأساعدك باستخدام الذكاء الاصطناعي.";
+    await sendWhatsAppMessage(phone, reply);
+    return;
   }
 
-  // 5) البوت موقّف
+  // 5) لو البوت موقّف لهذا العميل
   if (sub.paused) {
-    return sendWhatsAppMessage(
-      phone,
-      "أنت حالياً مع خدمة العملاء.\nاكتب: تشغيل البوت للرجوع."
-    );
+    const reply =
+      "أنت حالياً مع خدمة العملاء 👨‍💼👩‍💼\n" +
+      "لن يقوم البوت بالرد حتى ينتهي تواصلك مع الموظف.\n" +
+      "إذا حاب ترجع للرد الآلي بالذكاء الاصطناعي، اكتب: تشغيل البوت";
+    await sendWhatsAppMessage(phone, reply);
+    return;
   }
 
-  // 6) ذكاء اصطناعي
+  // 6) الذكاء الاصطناعي للمشتركين فقط
   const aiReply = await askAI(msg);
   await sendWhatsAppMessage(phone, aiReply);
 }
 
-// =========================
-// START WHATSAPP
-// =========================
 export async function startWhatsApp() {
   const { state, saveCreds } = await useMultiFileAuthState("./auth");
   const { version } = await fetchLatestBaileysVersion();
 
-  console.log("🚀 Baileys version:", version);
+  console.log("📦 Baileys version:", version);
 
-  sock = makeWASoc
+  sock = makeWASocket({
+    version,
+    auth: state,
+    printQRInTerminal: true, // يطلع QR في الـ CMD عشان تربط الرقم مرة واحدة
+    logger: pino({ level: "silent" })
+  });
+
+  sock.ev.on("creds.update", saveCreds);
+
+  sock.ev.on("connection.update", (update) => {
+    const { connection, lastDisconnect, qr } = update;
+
+    if (qr) {
+      console.log("\n======== QR CODE ========\n");
+      console.log(qr);
+      console.log("\n==========================\n");
+      // تطبع QR كنص فقط في التيرمنال
+    }
+
+    if (connection === "open") {
+      console.log("✅ تم الاتصال بواتساب بنجاح.");
+    }
+
+    if (connection === "close") {
+      const reason = lastDisconnect?.error?.output?.statusCode;
+      console.log("❌ الاتصال انقطع، السبب:", reason);
+
+      if (reason !== DisconnectReason.loggedOut) {
+        console.log("🔄 إعادة محاولة الاتصال...");
+        startWhatsApp();
+      } else {
+        console.log("⚠️ تم تسجيل الخروج. امسح QR من جديد.");
+      }
+    }
+  });
+
+  sock.ev.on("messages.upsert", async (m) => {
+    const msg = m.messages?.[0];
+    if (!msg || !msg.message) return;
+
+    const from = msg.key.remoteJid;
+    const isFromMe = !!msg.key.fromMe;
+    const text =
+      msg.message.conversation ||
+      msg.message.extendedTextMessage?.text ||
+      msg.message?.[Object.keys(msg.message)[0]]?.text ||
+      "";
+
+    await handleIncomingMessage(from, text, isFromMe);
+  });
+}
