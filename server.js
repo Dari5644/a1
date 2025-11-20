@@ -1,3 +1,4 @@
+// server.js
 import express from "express";
 import bodyParser from "body-parser";
 import cors from "cors";
@@ -11,14 +12,12 @@ import {
   getSetting,
   setSetting,
   upsertContact,
-  getContactByWaId,
   getContacts,
-  insertMessage,
   getMessagesByContact,
+  insertMessage,
   setBotPausedForContactId,
   deleteContact
 } from "./db.js";
-import OpenAI from "openai";
 
 dotenv.config();
 
@@ -32,181 +31,63 @@ const __dirname = path.dirname(__filename);
 app.use(express.static(path.join(__dirname, "public")));
 
 const PORT = process.env.PORT || 3000;
-const VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN || "smartbot";
-const ACCESS_TOKEN = process.env.WHATSAPP_ACCESS_TOKEN || "";
-const PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID || "";
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
+const N8N_SEND_WEBHOOK_URL = process.env.N8N_SEND_WEBHOOK_URL || "";
+const N8N_SHARED_SECRET = process.env.N8N_SHARED_SECRET || "";
 
-const openai = OPENAI_API_KEY ? new OpenAI({ apiKey: OPENAI_API_KEY }) : null;
-
+// تهيئة قاعدة البيانات
 initDb();
 
-async function sendWhatsAppText(toWaId, body) {
-  if (!ACCESS_TOKEN || !PHONE_NUMBER_ID) {
-    console.error("WhatsApp config missing.");
-    return;
-  }
-
-  try {
-    await axios.post(
-      `https://graph.facebook.com/v18.0/${PHONE_NUMBER_ID}/messages`,
-      {
-        messaging_product: "whatsapp",
-        to: toWaId,
-        type: "text",
-        text: { body }
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${ACCESS_TOKEN}`,
-          "Content-Type": "application/json"
-        }
-      }
-    );
-    console.log("✅ Sent WhatsApp message to", toWaId);
-  } catch (err) {
-    console.error(
-      "❌ Error sending WhatsApp message:",
-      err.response?.data || err.message
-    );
-  }
+// فحص السر المشترك مع n8n (اختياري)
+function checkN8nSecret(req) {
+  if (!N8N_SHARED_SECRET) return true;
+  const header = req.headers["x-n8n-secret"];
+  return header && header === N8N_SHARED_SECRET;
 }
 
-async function getAIReply(message) {
-  if (!openai) {
-    return "شكراً لتواصلك مع Smart Bot 🤖\nتم استلام رسالتك وسنقوم بالرد عليك قريباً.";
-  }
-
+/**
+ * 📥 Webhook من n8n → اللوحة
+ * كل رسالة تمر في n8n (من العميل أو من البوت) ترسل نسخة هنا.
+ *
+ * مثال الجسم من n8n:
+ * {
+ *   "wa_id": "9665xxxxxxx",
+ *   "name": "اسم العميل",
+ *   "direction": "in" | "out",
+ *   "body": "نص الرسالة",
+ *   "type": "text",
+ *   "timestamp": "2025-11-20T18:30:00Z"
+ * }
+ */
+app.post("/n8n/incoming", async (req, res) => {
   try {
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4.1-mini",
-      messages: [
-        {
-          role: "system",
-          content:
-            "أنت بوت خدمة عملاء لبوتات الواتساب في متجر اسمه Smart Bot. رد بأجوبة قصيرة وواضحة وبلهجة عربية بسيطة."
-        },
-        { role: "user", content: message }
-      ]
-    });
-
-    return (
-      completion.choices?.[0]?.message?.content?.trim() ||
-      "شكراً لتواصلك مع Smart Bot 🤖"
-    );
-  } catch (err) {
-    console.error("❌ OpenAI error:", err.response?.data || err.message);
-    return "حصل خلل مؤقت في خدمة الرد الآلي، سيتم الرد عليك من خدمة العملاء قريباً.";
-  }
-}
-
-app.get("/webhook", (req, res) => {
-  const mode = req.query["hub.mode"];
-  const token = req.query["hub.verify_token"];
-  const challenge = req.query["hub.challenge"];
-
-  if (mode && token && mode === "subscribe" && token === VERIFY_TOKEN) {
-    console.log("✅ Webhook verified.");
-    return res.status(200).send(challenge);
-  }
-
-  return res.sendStatus(403);
-});
-
-app.post("/webhook", async (req, res) => {
-  const body = req.body;
-
-  try {
-    if (body.object === "whatsapp_business_account") {
-      const entry = body.entry?.[0];
-      const changes = entry?.changes?.[0];
-      const value = changes?.value;
-      const messages = value?.messages;
-
-      if (messages && messages.length > 0) {
-        const msg = messages[0];
-        const from = msg.from;
-        const profileName = value?.contacts?.[0]?.profile?.name || from;
-        const text =
-          msg.text?.body ||
-          msg.interactive?.button_reply?.title ||
-          msg.interactive?.list_reply?.title ||
-          "";
-
-        console.log("📩 Incoming WhatsApp:", from, "=>", text);
-
-        const contact = await upsertContact(from, profileName);
-
-        await insertMessage(
-          contact.id,
-          false,
-          text,
-          msg.type || "text",
-          new Date().toISOString()
-        );
-
-        const lower = text.toLowerCase();
-        if (
-          text.includes("خدمة العملاء") ||
-          lower.includes("support") ||
-          lower.includes("agent")
-        ) {
-          await setBotPausedForContactId(contact.id, true);
-          const reply = "تم تحويلك إلى خدمة العملاء 👨‍💼👩‍💼";
-          await insertMessage(
-            contact.id,
-            true,
-            reply,
-            "text",
-            new Date().toISOString()
-          );
-          await sendWhatsAppText(
-            from,
-            reply + "\nسيتم الرد عليك من الفريق البشري."
-          );
-        } else if (
-          text.includes("تشغيل البوت") ||
-          lower.includes("start bot") ||
-          lower.includes("resume bot")
-        ) {
-          await setBotPausedForContactId(contact.id, false);
-          const reply =
-            "تم إعادة تشغيل البوت 🤖✅\nاكتب سؤالك الآن، وسنخدمك بالرد الذكي.";
-          await insertMessage(
-            contact.id,
-            true,
-            reply,
-            "text",
-            new Date().toISOString()
-          );
-          await sendWhatsAppText(from, reply);
-        } else {
-          if (!contact.bot_paused) {
-            const ai = await getAIReply(text);
-            await insertMessage(
-              contact.id,
-              true,
-              ai,
-              "text",
-              new Date().toISOString()
-            );
-            await sendWhatsAppText(from, ai);
-          } else {
-            console.log(
-              "ℹ البوت متوقف لهذا العميل، لن يتم الرد آلياً. فقط تخزين الرسائل."
-            );
-          }
-        }
-      }
+    if (!checkN8nSecret(req)) {
+      return res.status(403).json({ error: "forbidden" });
     }
 
-    res.sendStatus(200);
+    const { wa_id, name, direction, body, type, timestamp } = req.body;
+    if (!wa_id || !body) {
+      return res.status(400).json({ error: "wa_id_and_body_required" });
+    }
+
+    const contact = await upsertContact(wa_id, name || wa_id);
+    const fromMe = direction === "out";
+
+    await insertMessage(
+      contact.id,
+      fromMe,
+      body,
+      type || "text",
+      timestamp || new Date().toISOString()
+    );
+
+    res.json({ success: true });
   } catch (err) {
-    console.error("❌ Error in webhook handler:", err);
-    res.sendStatus(500);
+    console.error("❌ /n8n/incoming error:", err);
+    res.status(500).json({ error: "internal_error" });
   }
 });
 
+// ===== API للمحادثات =====
 app.get("/api/contacts", async (req, res) => {
   try {
     const contacts = await getContacts();
@@ -228,10 +109,15 @@ app.get("/api/contacts/:id/messages", async (req, res) => {
   }
 });
 
+// إرسال من اللوحة → n8n → واتساب
 app.post("/api/contacts/:id/send", async (req, res) => {
   try {
     const contactId = parseInt(req.params.id, 10);
     const { body } = req.body;
+
+    if (!N8N_SEND_WEBHOOK_URL) {
+      return res.status(500).json({ error: "N8N_SEND_WEBHOOK_URL_not_set" });
+    }
 
     db.get(
       "SELECT * FROM contacts WHERE id = ?",
@@ -242,7 +128,27 @@ app.post("/api/contacts/:id/send", async (req, res) => {
         }
 
         const wa_id = contact.wa_id;
-        await sendWhatsAppText(wa_id, body);
+
+        // نرسل لنود n8n
+        try {
+          await axios.post(
+            N8N_SEND_WEBHOOK_URL,
+            { wa_id, body },
+            {
+              headers: N8N_SHARED_SECRET
+                ? { "x-n8n-secret": N8N_SHARED_SECRET }
+                : {}
+            }
+          );
+        } catch (err2) {
+          console.error(
+            "❌ Error posting to n8n send webhook:",
+            err2.response?.data || err2.message
+          );
+          return res.status(500).json({ error: "n8n_send_failed" });
+        }
+
+        // نخزن الرسالة في قاعدة البيانات
         await insertMessage(
           contactId,
           true,
@@ -260,13 +166,41 @@ app.post("/api/contacts/:id/send", async (req, res) => {
   }
 });
 
+// إنشاء محادثة جديدة من اللوحة
 app.post("/api/contacts/new", async (req, res) => {
   try {
     const { wa_id, display_name, first_message } = req.body;
+    if (!wa_id) {
+      return res.status(400).json({ error: "wa_id_required" });
+    }
+
     const contact = await upsertContact(wa_id, display_name || wa_id);
 
     if (first_message && first_message.trim()) {
-      await sendWhatsAppText(wa_id, first_message);
+      if (!N8N_SEND_WEBHOOK_URL) {
+        return res
+          .status(500)
+          .json({ error: "N8N_SEND_WEBHOOK_URL_not_set_for_first_message" });
+      }
+
+      try {
+        await axios.post(
+          N8N_SEND_WEBHOOK_URL,
+          { wa_id, body: first_message },
+          {
+            headers: N8N_SHARED_SECRET
+              ? { "x-n8n-secret": N8N_SHARED_SECRET }
+              : {}
+          }
+        );
+      } catch (err2) {
+        console.error(
+          "❌ Error posting first message to n8n:",
+          err2.response?.data || err2.message
+        );
+        return res.status(500).json({ error: "n8n_send_failed" });
+      }
+
       await insertMessage(
         contact.id,
         true,
@@ -283,6 +217,7 @@ app.post("/api/contacts/new", async (req, res) => {
   }
 });
 
+// إيقاف / تشغيل البوت (علامة فقط)
 app.post("/api/contacts/:id/bot-toggle", async (req, res) => {
   try {
     const contactId = parseInt(req.params.id, 10);
@@ -306,6 +241,7 @@ app.delete("/api/contacts/:id", async (req, res) => {
   }
 });
 
+// إعدادات (اسم وصورة البوت داخل اللوحة فقط)
 app.get("/api/settings", async (req, res) => {
   try {
     const bot_name = await getSetting("bot_name");
@@ -329,10 +265,11 @@ app.post("/api/settings", async (req, res) => {
   }
 });
 
+// SPA fallback
 app.get("*", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
 app.listen(PORT, () => {
-  console.log(`🚀 Smart Bot panel running on port ${PORT}`);
+  console.log(`🚀 Smart Bot panel (n8n mode) running on port ${PORT}`);
 });
