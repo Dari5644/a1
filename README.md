@@ -1,0 +1,1 @@
+# Smart Bot Panel\nلوحة تحكم واتساب عبر WhatsApp Cloud API.
