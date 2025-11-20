@@ -1,5 +1,5 @@
 {
-  "name": "smart-bot-panel-n8n",
+  "name": "smart-bot-n8n-panel",
   "version": "1.0.0",
   "description": "Smart Bot WhatsApp panel integrated with n8n (no AI)",
   "main": "server.js",
