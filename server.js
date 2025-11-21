@@ -6,7 +6,9 @@ import dotenv from "dotenv";
 import path from "path";
 import { fileURLToPath } from "url";
 import OpenAI from "openai";
+
 import {
+  db,
   initDb,
   getSetting,
   setSetting,
@@ -17,7 +19,7 @@ import {
   upsertContact,
   getContactByWaId,
   insertMessage,
-  setBotPausedForPhone
+  setBotPausedForPhone,
 } from "./db.js";
 import { OWNER_PASSWORD, BOT_SYSTEM_PROMPT, VERIFY_TOKEN } from "./config.js";
 import { sendWhatsAppMessageMeta } from "./meta.js";
@@ -36,7 +38,7 @@ app.use(express.static(__dirname));
 const PORT = process.env.PORT || 3000;
 
 const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY
+  apiKey: process.env.OPENAI_API_KEY,
 });
 
 async function askAI(userText) {
@@ -45,8 +47,8 @@ async function askAI(userText) {
       model: "gpt-4.1-mini",
       messages: [
         { role: "system", content: BOT_SYSTEM_PROMPT },
-        { role: "user", content: userText }
-      ]
+        { role: "user", content: userText },
+      ],
     });
     const reply = completion.choices?.[0]?.message?.content?.trim();
     return reply || "حصل خطأ بسيط، حاول تكتب سؤالك مرة ثانية 🙏";
@@ -56,7 +58,7 @@ async function askAI(userText) {
   }
 }
 
-// Webhook GET verify
+// =============== Webhook GET (Verify) ===============
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
@@ -70,7 +72,7 @@ app.get("/webhook", (req, res) => {
   return res.sendStatus(403);
 });
 
-// Webhook POST - receive messages
+// =============== Webhook POST (Messages) ===============
 app.post("/webhook", async (req, res) => {
   try {
     const body = req.body;
@@ -86,9 +88,11 @@ app.post("/webhook", async (req, res) => {
         const msg = messages[0];
         const contactMeta = contactsMeta?.[0];
 
-        const fromWaId = msg.from;
+        const fromWaId = msg.from; // مثل: 9665XXXXXXXX
         const name = contactMeta?.profile?.name || fromWaId;
-        const timestamp = new Date(parseInt(msg.timestamp, 10) * 1000).toISOString();
+        const timestamp = new Date(
+          parseInt(msg.timestamp, 10) * 1000
+        ).toISOString();
 
         let text = "";
         if (msg.type === "text") {
@@ -99,12 +103,37 @@ app.post("/webhook", async (req, res) => {
 
         console.log("📩 رسالة واردة من Meta:", fromWaId, "النص:", text);
 
+        // حفظ/تحديث جهة الاتصال
         const contact = await upsertContact(fromWaId, name);
-        await insertMessage(contact.id, false, text, msg.type || "text", timestamp);
+
+        // حفظ الرسالة الواردة في قاعدة البيانات
+        await insertMessage(
+          contact.id,
+          false,
+          text,
+          msg.type || "text",
+          timestamp
+        );
 
         const clean = (text || "").trim();
         const lower = clean.toLowerCase();
 
+        // أولوية 1: تشغيل البوت إذا كتب "تشغيل البوت" أو رجع البوت
+        if (
+          clean.includes("تشغيل البوت") ||
+          clean.includes("رجع البوت") ||
+          lower.includes("resume bot") ||
+          lower.includes("start bot")
+        ) {
+          await setBotPausedForPhone(fromWaId, false);
+          await sendWhatsAppMessageMeta(
+            fromWaId,
+            "تم إعادة تشغيل البوت 🤖✅\nاكتب سؤالك الآن، وسأساعدك باستخدام الذكاء الاصطناعي."
+          );
+          return res.sendStatus(200);
+        }
+
+        // أولوية 2: تحويل لخدمة العملاء إذا قال ما فهم أو خدمة العملاء
         const needSupport =
           clean.includes("خدمة العملاء") ||
           clean.includes("مو واضح") ||
@@ -127,6 +156,7 @@ app.post("/webhook", async (req, res) => {
           return res.sendStatus(200);
         }
 
+        // أولوية 3: إذا البوت موقّف لهذا العميل
         const freshContact = await getContactByWaId(fromWaId);
         if (freshContact && freshContact.bot_paused) {
           await sendWhatsAppMessageMeta(
@@ -138,22 +168,15 @@ app.post("/webhook", async (req, res) => {
           return res.sendStatus(200);
         }
 
-        if (
-          clean.includes("تشغيل البوت") ||
-          clean.includes("رجع البوت") ||
-          lower.includes("resume bot") ||
-          lower.includes("start bot")
-        ) {
-          await setBotPausedForPhone(fromWaId, false);
-          await sendWhatsAppMessageMeta(
-            fromWaId,
-            "تم إعادة تشغيل البوت 🤖✅\nاكتب سؤالك الآن، وسأساعدك باستخدام الذكاء الاصطناعي."
-          );
-          return res.sendStatus(200);
-        }
-
+        // أولوية 4: رد الذكاء الاصطناعي
         const aiReply = await askAI(clean);
-        await insertMessage(contact.id, true, aiReply, "text", new Date().toISOString());
+        await insertMessage(
+          contact.id,
+          true,
+          aiReply,
+          "text",
+          new Date().toISOString()
+        );
         await sendWhatsAppMessageMeta(fromWaId, aiReply);
       }
     }
@@ -165,7 +188,7 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-// API for settings
+// =============== Settings APIs (اسم وصورة البوت) ===============
 app.get("/api/settings", async (req, res) => {
   try {
     const bot_name = await getSetting("bot_name");
@@ -192,7 +215,7 @@ app.post("/api/settings", async (req, res) => {
   }
 });
 
-// Contacts APIs
+// =============== Contacts APIs ===============
 app.get("/api/contacts", async (req, res) => {
   try {
     const contacts = await getContacts();
@@ -214,26 +237,20 @@ app.get("/api/contacts/:id/messages", async (req, res) => {
   }
 });
 
+// إرسال رسالة من اللوحة للعميل
 app.post("/api/contacts/:id/send", async (req, res) => {
   try {
     const contactId = parseInt(req.params.id, 10);
     const { body } = req.body;
 
-    import("sqlite3").then((sqlite3Module) => {
-      const sqlite3 = sqlite3Module.default;
-      const dbPath = path.join(__dirname, "smartbot.db");
-      const dbConn = new sqlite3.Database(dbPath);
+    db.get("SELECT * FROM contacts WHERE id = ?", [contactId], async (err, c) => {
+      if (err || !c) {
+        return res.status(404).json({ error: "contact_not_found" });
+      }
 
-      dbConn.get("SELECT * FROM contacts WHERE id = ?", [contactId], async (err, c) => {
-        if (err || !c) {
-          dbConn.close();
-          return res.status(404).json({ error: "contact_not_found" });
-        }
-        await sendWhatsAppMessageMeta(c.wa_id, body);
-        await insertMessage(contactId, true, body, "text", new Date().toISOString());
-        dbConn.close();
-        res.json({ success: true });
-      });
+      await sendWhatsAppMessageMeta(c.wa_id, body);
+      await insertMessage(contactId, true, body, "text", new Date().toISOString());
+      res.json({ success: true });
     });
   } catch (err) {
     console.error("❌ /api/contacts/:id/send error:", err);
@@ -241,6 +258,7 @@ app.post("/api/contacts/:id/send", async (req, res) => {
   }
 });
 
+// إيقاف / تشغيل البوت لعميل معيّن
 app.post("/api/contacts/:id/bot-toggle", async (req, res) => {
   try {
     const contactId = parseInt(req.params.id, 10);
@@ -253,6 +271,7 @@ app.post("/api/contacts/:id/bot-toggle", async (req, res) => {
   }
 });
 
+// حذف محادثة كاملة
 app.delete("/api/contacts/:id", async (req, res) => {
   try {
     const contactId = parseInt(req.params.id, 10);
@@ -264,7 +283,7 @@ app.delete("/api/contacts/:id", async (req, res) => {
   }
 });
 
-// Serve SPA
+// =============== Serve Frontend (index.html) ===============
 app.get("*", (req, res) => {
   res.sendFile(path.join(__dirname, "index.html"));
 });
