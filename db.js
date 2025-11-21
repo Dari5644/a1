@@ -11,38 +11,44 @@ const dbPath = path.join(__dirname, "smartbot.db");
 sqlite3.verbose();
 export const db = new sqlite3.Database(dbPath);
 
+// =============================
 // Initialize DB
+// =============================
 export function initDb() {
   db.serialize(() => {
-    db.run(`
-      CREATE TABLE IF NOT EXISTS settings (
-        key TEXT PRIMARY KEY,
-        value TEXT
-      );
-    `);
+    // جدول الإعدادات
+    db.run(
+      "CREATE TABLE IF NOT EXISTS settings (" +
+        "key TEXT PRIMARY KEY," +
+        "value TEXT" +
+      ");"
+    );
 
-    db.run(`
-      CREATE TABLE IF NOT EXISTS contacts (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        wa_id TEXT UNIQUE,
-        display_name TEXT,
-        bot_paused INTEGER DEFAULT 0,
-        created_at TEXT DEFAULT (datetime('now'))
-      );
-    `);
+    // جدول جهات الاتصال
+    db.run(
+      "CREATE TABLE IF NOT EXISTS contacts (" +
+        "id INTEGER PRIMARY KEY AUTOINCREMENT," +
+        "wa_id TEXT UNIQUE," +
+        "display_name TEXT," +
+        "bot_paused INTEGER DEFAULT 0," +
+        "created_at TEXT DEFAULT (datetime('now'))" +
+      ");"
+    );
 
-    db.run(`
-      CREATE TABLE IF NOT EXISTS messages (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        contact_id INTEGER,
-        from_me INTEGER,
-        body TEXT,
-        type TEXT,
-        timestamp TEXT,
-        FOREIGN KEY(contact_id) REFERENCES contacts(id)
-      );
-    `);
+    // جدول الرسائل
+    db.run(
+      "CREATE TABLE IF NOT EXISTS messages (" +
+        "id INTEGER PRIMARY KEY AUTOINCREMENT," +
+        "contact_id INTEGER," +
+        "from_me INTEGER," +
+        "body TEXT," +
+        "type TEXT," +
+        "timestamp TEXT," +
+        "FOREIGN KEY(contact_id) REFERENCES contacts(id)" +
+      ");"
+    );
 
+    // قيم افتراضية
     db.run(
       "INSERT OR IGNORE INTO settings(key, value) VALUES('bot_name', 'Smart Bot');"
     );
@@ -52,7 +58,9 @@ export function initDb() {
   });
 }
 
-// Settings helpers
+// =============================
+// Settings
+// =============================
 export function getSetting(key) {
   return new Promise((resolve, reject) => {
     db.get("SELECT value FROM settings WHERE key = ?", [key], (err, row) => {
@@ -65,9 +73,8 @@ export function getSetting(key) {
 export function setSetting(key, value) {
   return new Promise((resolve, reject) => {
     db.run(
-      `INSERT INTO settings(key, value)
-       VALUES(?, ?)
-       ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+      "INSERT INTO settings(key, value) VALUES(?, ?) " +
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
       [key, value],
       (err) => {
         if (err) return reject(err);
@@ -77,13 +84,14 @@ export function setSetting(key, value) {
   });
 }
 
+// =============================
 // Contacts
+// =============================
 export function upsertContact(wa_id, display_name) {
   return new Promise((resolve, reject) => {
     db.run(
-      `INSERT INTO contacts(wa_id, display_name)
-       VALUES(?, ?)
-       ON CONFLICT(wa_id) DO UPDATE SET display_name = excluded.display_name`,
+      "INSERT INTO contacts(wa_id, display_name) VALUES(?, ?) " +
+        "ON CONFLICT(wa_id) DO UPDATE SET display_name = excluded.display_name",
       [wa_id, display_name],
       function (err) {
         if (err) return reject(err);
@@ -112,24 +120,23 @@ export function getContactByWaId(wa_id) {
 
 export function getContacts() {
   return new Promise((resolve, reject) => {
-    db.all(
-      `
-      SELECT 
-        c.*, 
-        (SELECT body FROM messages m WHERE m.contact_id = c.id ORDER BY m.id DESC LIMIT 1) AS last_message,
-        (SELECT timestamp FROM messages m WHERE m.contact_id = c.id ORDER BY m.id DESC LIMIT 1) AS last_timestamp
-      FROM contacts c
-      ORDER BY last_timestamp DESC, created_at DESC
-      `,
-      [],
-      (err, rows) => {
-        if (err) return reject(err);
-        resolve(rows || []);
-      }
-    );
+    const sql =
+      "SELECT c.*, " +
+      "(SELECT body FROM messages m WHERE m.contact_id = c.id ORDER BY m.id DESC LIMIT 1) AS last_message, " +
+      "(SELECT timestamp FROM messages m WHERE m.contact_id = c.id ORDER BY m.id DESC LIMIT 1) AS last_timestamp " +
+      "FROM contacts c " +
+      "ORDER BY last_timestamp DESC, created_at DESC";
+
+    db.all(sql, [], (err, rows) => {
+      if (err) return reject(err);
+      resolve(rows || []);
+    });
   });
 }
 
+// =============================
+// Messages
+// =============================
 export function getMessagesByContact(contactId) {
   return new Promise((resolve, reject) => {
     db.all(
@@ -143,12 +150,11 @@ export function getMessagesByContact(contactId) {
   });
 }
 
-// Messages
 export function insertMessage(contactId, fromMe, body, type, timestamp) {
   return new Promise((resolve, reject) => {
     db.run(
-      `INSERT INTO messages(contact_id, from_me, body, type, timestamp)
-       VALUES(?, ?, ?, ?, ?)`,
+      "INSERT INTO messages(contact_id, from_me, body, type, timestamp) " +
+        "VALUES(?, ?, ?, ?, ?)",
       [contactId, fromMe ? 1 : 0, body, type || "text", timestamp],
       function (err) {
         if (err) return reject(err);
@@ -158,7 +164,9 @@ export function insertMessage(contactId, fromMe, body, type, timestamp) {
   });
 }
 
-// Bot pause
+// =============================
+// Bot Pause
+// =============================
 export function setBotPausedForContactId(contactId, paused) {
   return new Promise((resolve, reject) => {
     db.run(
@@ -185,7 +193,9 @@ export function setBotPausedForPhone(wa_id, paused) {
   });
 }
 
-// Delete contact + messages
+// =============================
+// Delete Contact
+// =============================
 export function deleteContact(contactId) {
   return new Promise((resolve, reject) => {
     db.run("DELETE FROM messages WHERE contact_id = ?", [contactId], (err) => {
