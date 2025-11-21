@@ -15,6 +15,7 @@ export const BOT_SYSTEM_PROMPT = `
 `;
 
 export const supportPhones = [
+  // مثال: "9665XXXXXXXX"
 ];
 
 export const OWNER_PASSWORD = "Mmaa3551";

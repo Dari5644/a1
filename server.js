@@ -31,7 +31,6 @@ const __dirname = path.dirname(__filename);
 const app = express();
 app.use(cors());
 app.use(bodyParser.json());
-
 app.use(express.static(__dirname));
 
 const PORT = process.env.PORT || 3000;
@@ -57,6 +56,7 @@ async function askAI(userText) {
   }
 }
 
+// Webhook GET verify
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
@@ -70,6 +70,7 @@ app.get("/webhook", (req, res) => {
   return res.sendStatus(403);
 });
 
+// Webhook POST - receive messages
 app.post("/webhook", async (req, res) => {
   try {
     const body = req.body;
@@ -164,6 +165,7 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
+// API for settings
 app.get("/api/settings", async (req, res) => {
   try {
     const bot_name = await getSetting("bot_name");
@@ -190,6 +192,7 @@ app.post("/api/settings", async (req, res) => {
   }
 });
 
+// Contacts APIs
 app.get("/api/contacts", async (req, res) => {
   try {
     const contacts = await getContacts();
@@ -216,7 +219,7 @@ app.post("/api/contacts/:id/send", async (req, res) => {
     const contactId = parseInt(req.params.id, 10);
     const { body } = req.body;
 
-    import("sqlite3").then(sqlite3Module => {
+    import("sqlite3").then((sqlite3Module) => {
       const sqlite3 = sqlite3Module.default;
       const dbPath = path.join(__dirname, "smartbot.db");
       const dbConn = new sqlite3.Database(dbPath);
@@ -261,6 +264,7 @@ app.delete("/api/contacts/:id", async (req, res) => {
   }
 });
 
+// Serve SPA
 app.get("*", (req, res) => {
   res.sendFile(path.join(__dirname, "index.html"));
 });
