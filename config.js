@@ -14,12 +14,12 @@ export const BOT_SYSTEM_PROMPT = `
 لا تعطي أكواد حساسة أو روابط عشوائية.
 `;
 
-export const supportPhones = [
-  // مثال: "9665XXXXXXXX"
+export const supportPhones = 
+   "966554986089"
 ];
 
 export const OWNER_PASSWORD = "Mmaa3551";
 
-export const PHONE_NUMBER_ID = "872960125902853";
-export const WABA_ID = "740009011716906";
+export const PHONE_NUMBER_ID = "832039609412539";
+export const WABA_ID = "838098542275761";
 export const VERIFY_TOKEN = "smartbot";
