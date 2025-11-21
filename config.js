@@ -20,6 +20,6 @@ export const supportPhones = [
 
 export const OWNER_PASSWORD = "Mmaa3551";
 
-export const PHONE_NUMBER_ID = "838098542275761";
+export const PHONE_NUMBER_ID = "860068550527641";
 export const WABA_ID = "832039609412539";
 export const VERIFY_TOKEN = "smartbot";
