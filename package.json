@@ -1,5 +1,5 @@
 {
-  "name": "smart-bot-meta",
+  "name": "smart-bot-meta-minimal",
   "version": "1.0.0",
   "main": "server.js",
   "type": "module",
