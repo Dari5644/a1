@@ -15,8 +15,10 @@ export const BOT_SYSTEM_PROMPT = `
 `;
 
 export const supportPhones = [
-  // ضع هنا أرقام خدمة العملاء إن وجدت (بدون +) مثال:
-  // "9665XXXXXXXX"
 ];
 
 export const OWNER_PASSWORD = "Mmaa3551";
+
+export const PHONE_NUMBER_ID = "872960125902853";
+export const WABA_ID = "740009011716906";
+export const VERIFY_TOKEN = "smartbot";

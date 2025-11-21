@@ -84,7 +84,7 @@ export function upsertContact(wa_id, display_name) {
       INSERT INTO contacts(wa_id, display_name)
       VALUES(?, ?)
       ON CONFLICT(wa_id) DO UPDATE SET display_name = excluded.display_name
-    `,
+    ",
       [wa_id, display_name],
       function (err) {
         if (err) return reject(err);
