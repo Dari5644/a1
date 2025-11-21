@@ -24,6 +24,9 @@ import {
 import { OWNER_PASSWORD, BOT_SYSTEM_PROMPT, VERIFY_TOKEN } from "./config.js";
 import { sendWhatsAppMessageMeta } from "./meta.js";
 
+// =============================
+// إعدادات أساسية
+// =============================
 dotenv.config();
 initDb();
 
@@ -41,6 +44,9 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
+// =============================
+// دالة الذكاء الاصطناعي
+// =============================
 async function askAI(userText) {
   try {
     const completion = await openai.chat.completions.create({
@@ -50,55 +56,75 @@ async function askAI(userText) {
         { role: "user", content: userText },
       ],
     });
-    const reply = completion.choices?.[0]?.message?.content?.trim();
+    const reply =
+      completion.choices &&
+      completion.choices[0] &&
+      completion.choices[0].message &&
+      completion.choices[0].message.content
+        ? completion.choices[0].message.content.trim()
+        : null;
+
     return reply || "حصل خطأ بسيط، حاول تكتب سؤالك مرة ثانية 🙏";
   } catch (err) {
-    console.error("❌ خطأ من OpenAI:", err?.response?.data || err.message);
+    console.error("❌ خطأ من OpenAI:", err && err.response && err.response.data ? err.response.data : err.message);
     return "حصل خلل مؤقت في خدمة الذكاء الاصطناعي، حاول بعد قليل 🙏";
   }
 }
 
-// =============== Webhook GET (Verify) ===============
+// =============================
+// Webhook GET (تحقق من ميتا)
+// =============================
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
 
+  console.log("📡 طلب تحقق Webhook GET:", mode, token);
+
   if (mode && token && mode === "subscribe" && token === VERIFY_TOKEN) {
     console.log("✅ Webhook verified with Meta.");
     return res.status(200).send(challenge);
   }
+
   console.warn("❌ Webhook verification failed.");
   return res.sendStatus(403);
 });
 
-// =============== Webhook POST (Messages) ===============
+// =============================
+// Webhook POST (استقبال رسائل واتساب)
+// =============================
 app.post("/webhook", async (req, res) => {
   try {
+    console.log("🔥🔥 وصلني Webhook من Meta (POST /webhook) 🔥🔥");
+    console.log("BODY:", JSON.stringify(req.body, null, 2));
+
     const body = req.body;
 
-    if (body.object === "whatsapp_business_account") {
-      const entry = body.entry?.[0];
-      const changes = entry?.changes?.[0];
-      const value = changes?.value;
-      const messages = value?.messages;
-      const contactsMeta = value?.contacts;
+    if (body && body.object === "whatsapp_business_account") {
+      const entry = body.entry && body.entry[0];
+      const changes = entry && entry.changes && entry.changes[0];
+      const value = changes && changes.value;
+      const messages = value && value.messages;
+      const contactsMeta = value && value.contacts;
 
       if (messages && messages.length > 0) {
         const msg = messages[0];
-        const contactMeta = contactsMeta?.[0];
+        const contactMeta = contactsMeta && contactsMeta[0];
 
-        const fromWaId = msg.from; // مثل: 9665XXXXXXXX
-        const name = contactMeta?.profile?.name || fromWaId;
-        const timestamp = new Date(
-          parseInt(msg.timestamp, 10) * 1000
-        ).toISOString();
+        const fromWaId = msg.from; // رقم الواتساب مثل 9665XXXX
+        const name =
+          contactMeta && contactMeta.profile && contactMeta.profile.name
+            ? contactMeta.profile.name
+            : fromWaId;
+
+        const ts = parseInt(msg.timestamp, 10) * 1000;
+        const timestamp = new Date(ts).toISOString();
 
         let text = "";
         if (msg.type === "text") {
-          text = msg.text?.body || "";
+          text = (msg.text && msg.text.body) || "";
         } else {
-          text = `[رسالة نوع ${msg.type}]`;
+          text = "[رسالة نوع " + msg.type + "]";
         }
 
         console.log("📩 رسالة واردة من Meta:", fromWaId, "النص:", text);
@@ -106,7 +132,7 @@ app.post("/webhook", async (req, res) => {
         // حفظ/تحديث جهة الاتصال
         const contact = await upsertContact(fromWaId, name);
 
-        // حفظ الرسالة الواردة في قاعدة البيانات
+        // حفظ الرسالة الواردة
         await insertMessage(
           contact.id,
           false,
@@ -118,57 +144,79 @@ app.post("/webhook", async (req, res) => {
         const clean = (text || "").trim();
         const lower = clean.toLowerCase();
 
-        // أولوية 1: تشغيل البوت إذا كتب "تشغيل البوت" أو رجع البوت
+        // 1) أمر تشغيل البوت من جديد
         if (
-          clean.includes("تشغيل البوت") ||
-          clean.includes("رجع البوت") ||
-          lower.includes("resume bot") ||
-          lower.includes("start bot")
+          clean.indexOf("تشغيل البوت") !== -1 ||
+          clean.indexOf("رجع البوت") !== -1 ||
+          lower.indexOf("resume bot") !== -1 ||
+          lower.indexOf("start bot") !== -1
         ) {
           await setBotPausedForPhone(fromWaId, false);
-          await sendWhatsAppMessageMeta(
-            fromWaId,
-            "تم إعادة تشغيل البوت 🤖✅\nاكتب سؤالك الآن، وسأساعدك باستخدام الذكاء الاصطناعي."
+
+          const reply =
+            "تم إعادة تشغيل البوت 🤖✅\n" +
+            "اكتب سؤالك الآن، وسأساعدك باستخدام الذكاء الاصطناعي.";
+
+          await insertMessage(
+            contact.id,
+            true,
+            reply,
+            "text",
+            new Date().toISOString()
           );
+          await sendWhatsAppMessageMeta(fromWaId, reply);
           return res.sendStatus(200);
         }
 
-        // أولوية 2: تحويل لخدمة العملاء إذا قال ما فهم أو خدمة العملاء
+        // 2) كلمات تدل أنه محتاج خدمة العملاء
         const needSupport =
-          clean.includes("خدمة العملاء") ||
-          clean.includes("مو واضح") ||
-          clean.includes("ما فهمت") ||
-          clean.includes("وش تقصد") ||
-          clean.includes("وضح أكثر") ||
-          lower.includes("support") ||
-          lower.includes("agent");
+          clean.indexOf("خدمة العملاء") !== -1 ||
+          clean.indexOf("مو واضح") !== -1 ||
+          clean.indexOf("ما فهمت") !== -1 ||
+          clean.indexOf("وش تقصد") !== -1 ||
+          clean.indexOf("وضح أكثر") !== -1 ||
+          lower.indexOf("support") !== -1 ||
+          lower.indexOf("agent") !== -1;
 
         if (needSupport) {
           await setBotPausedForPhone(fromWaId, true);
 
-          await sendWhatsAppMessageMeta(
-            fromWaId,
+          const reply =
             "تم تحويلك إلى خدمة العملاء 👨‍💼👩‍💼\n" +
-              "سيتوقف البوت عن الرد مؤقتاً حتى يخدمك أحد موظفينا.\n" +
-              "إذا حاب ترجع للرد الآلي بالذكاء الاصطناعي، اكتب: تشغيل البوت"
-          );
+            "سيتوقف البوت عن الرد مؤقتاً حتى يخدمك أحد موظفينا.\n" +
+            "إذا حاب ترجع للرد الآلي بالذكاء الاصطناعي، اكتب: تشغيل البوت";
 
+          await insertMessage(
+            contact.id,
+            true,
+            reply,
+            "text",
+            new Date().toISOString()
+          );
+          await sendWhatsAppMessageMeta(fromWaId, reply);
           return res.sendStatus(200);
         }
 
-        // أولوية 3: إذا البوت موقّف لهذا العميل
+        // 3) لو البوت موقّف لهذا العميل
         const freshContact = await getContactByWaId(fromWaId);
         if (freshContact && freshContact.bot_paused) {
-          await sendWhatsAppMessageMeta(
-            fromWaId,
+          const reply =
             "أنت حالياً مع خدمة العملاء 👨‍💼👩‍💼\n" +
-              "لن يقوم البوت بالرد حتى ينتهي تواصلك مع الموظف.\n" +
-              "إذا حاب ترجع للرد الآلي بالذكاء الاصطناعي، اكتب: تشغيل البوت"
+            "لن يقوم البوت بالرد حتى ينتهي تواصلك مع الموظف.\n" +
+            "إذا حاب ترجع للرد الآلي بالذكاء الاصطناعي، اكتب: تشغيل البوت";
+
+          await insertMessage(
+            contact.id,
+            true,
+            reply,
+            "text",
+            new Date().toISOString()
           );
+          await sendWhatsAppMessageMeta(fromWaId, reply);
           return res.sendStatus(200);
         }
 
-        // أولوية 4: رد الذكاء الاصطناعي
+        // 4) رد الذكاء الاصطناعي (الافتراضي)
         const aiReply = await askAI(clean);
         await insertMessage(
           contact.id,
@@ -188,7 +236,9 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-// =============== Settings APIs (اسم وصورة البوت) ===============
+// =============================
+// API: إعدادات اسم وصورة البوت
+// =============================
 app.get("/api/settings", async (req, res) => {
   try {
     const bot_name = await getSetting("bot_name");
@@ -202,12 +252,22 @@ app.get("/api/settings", async (req, res) => {
 
 app.post("/api/settings", async (req, res) => {
   try {
-    const { bot_name, bot_avatar, owner_password } = req.body;
+    const body = req.body;
+    const bot_name = body.bot_name;
+    const bot_avatar = body.bot_avatar;
+    const owner_password = body.owner_password;
+
     if (owner_password !== OWNER_PASSWORD) {
       return res.status(403).json({ error: "forbidden" });
     }
-    if (bot_name) await setSetting("bot_name", bot_name);
-    if (bot_avatar) await setSetting("bot_avatar", bot_avatar);
+
+    if (bot_name) {
+      await setSetting("bot_name", bot_name);
+    }
+    if (bot_avatar) {
+      await setSetting("bot_avatar", bot_avatar);
+    }
+
     res.json({ success: true });
   } catch (err) {
     console.error("❌ /api/settings POST error:", err);
@@ -215,7 +275,9 @@ app.post("/api/settings", async (req, res) => {
   }
 });
 
-// =============== Contacts APIs ===============
+// =============================
+// API: جهات الاتصال والمحادثات
+// =============================
 app.get("/api/contacts", async (req, res) => {
   try {
     const contacts = await getContacts();
@@ -241,7 +303,7 @@ app.get("/api/contacts/:id/messages", async (req, res) => {
 app.post("/api/contacts/:id/send", async (req, res) => {
   try {
     const contactId = parseInt(req.params.id, 10);
-    const { body } = req.body;
+    const body = req.body.body;
 
     db.get("SELECT * FROM contacts WHERE id = ?", [contactId], async (err, c) => {
       if (err || !c) {
@@ -249,7 +311,14 @@ app.post("/api/contacts/:id/send", async (req, res) => {
       }
 
       await sendWhatsAppMessageMeta(c.wa_id, body);
-      await insertMessage(contactId, true, body, "text", new Date().toISOString());
+      await insertMessage(
+        contactId,
+        true,
+        body,
+        "text",
+        new Date().toISOString()
+      );
+
       res.json({ success: true });
     });
   } catch (err) {
@@ -258,11 +327,12 @@ app.post("/api/contacts/:id/send", async (req, res) => {
   }
 });
 
-// إيقاف / تشغيل البوت لعميل معيّن
+// إيقاف / تشغيل البوت لعميل معين من اللوحة
 app.post("/api/contacts/:id/bot-toggle", async (req, res) => {
   try {
     const contactId = parseInt(req.params.id, 10);
-    const { paused } = req.body;
+    const paused = !!req.body.paused;
+
     await setBotPausedForContactId(contactId, paused);
     res.json({ success: true });
   } catch (err) {
@@ -283,11 +353,16 @@ app.delete("/api/contacts/:id", async (req, res) => {
   }
 });
 
-// =============== Serve Frontend (index.html) ===============
+// =============================
+// تقديم الواجهة الأمامية (index.html)
+// =============================
 app.get("*", (req, res) => {
   res.sendFile(path.join(__dirname, "index.html"));
 });
 
+// =============================
+// تشغيل السيرفر
+// =============================
 app.listen(PORT, () => {
   console.log("🚀 Smart Bot Meta panel running on port " + PORT);
   console.log("📡 جاهز لاستقبال Webhook على /webhook");
