@@ -14,7 +14,7 @@ export const BOT_SYSTEM_PROMPT = `
 لا تعطي أكواد حساسة أو روابط عشوائية.
 `;
 
-export const supportPhones = 
+export const supportPhones = [
    "966554986089"
 ];
 
