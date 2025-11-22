@@ -3,49 +3,44 @@ import express from "express";
 import bodyParser from "body-parser";
 import cors from "cors";
 import dotenv from "dotenv";
-import axios from "axios";
+import path from "path";
+import { fileURLToPath } from "url";
+
+import {
+  db,
+  initDb,
+  getSetting,
+  setSetting,
+  getContacts,
+  getMessagesByContact,
+  deleteContact,
+  setBotPausedForContactId,
+  upsertContact,
+  getContactByWaId,
+  insertMessage,
+  setBotPausedForPhone
+} from "./db.js";
+
+import { OWNER_PASSWORD, FALLBACK_VERIFY_TOKEN } from "./config.js";
+import { sendWhatsAppMessage } from "./meta.js";
 
 dotenv.config();
+initDb();
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
 app.use(cors());
 app.use(bodyParser.json());
+app.use(express.static(__dirname));
 
 const PORT = process.env.PORT || 3000;
+const VERIFY_TOKEN = process.env.VERIFY_TOKEN || FALLBACK_VERIFY_TOKEN;
 
-const VERIFY_TOKEN = process.env.VERIFY_TOKEN;          // مثلا: smartbot
-const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN; // التوكن من Meta
-const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;    // مثلا: 872960125902853
-
-if (!VERIFY_TOKEN) console.warn("⚠️ VERIFY_TOKEN غير مضبوط في متغيرات البيئة");
-if (!META_ACCESS_TOKEN) console.warn("⚠️ META_ACCESS_TOKEN غير مضبوط في متغيرات البيئة");
-if (!PHONE_NUMBER_ID) console.warn("⚠️ PHONE_NUMBER_ID غير مضبوط في متغيرات البيئة");
-
-async function sendWhatsAppMessage(toWaId, text) {
-  try {
-    const url = `https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`;
-    const payload = {
-      messaging_product: "whatsapp",
-      to: toWaId,
-      type: "text",
-      text: {
-        preview_url: false,
-        body: text
-      }
-    };
-    const res = await axios.post(url, payload, {
-      headers: {
-        Authorization: `Bearer ${META_ACCESS_TOKEN}`,
-        "Content-Type": "application/json"
-      }
-    });
-    console.log("✅ تم إرسال رسالة إلى:", toWaId, "message_id:", res.data.messages?.[0]?.id);
-  } catch (err) {
-    console.error("❌ خطأ في إرسال رسالة عبر Meta:", err.response?.data || err.message);
-  }
-}
-
-// Webhook GET (للتحقق مع Meta)
+// =============================
+// Webhook GET (Verify)
+// =============================
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
@@ -62,40 +57,144 @@ app.get("/webhook", (req, res) => {
   return res.sendStatus(403);
 });
 
-// Webhook POST (الرسائل من واتساب)
+// =============================
+// Webhook POST (Messages)
+// =============================
 app.post("/webhook", async (req, res) => {
   try {
-    console.log("🔥🔥 وصلني Webhook من Meta (POST /webhook) 🔥🔥");
+    console.log("🔥🔥 Webhook POST من Meta 🔥🔥");
     console.log("BODY:", JSON.stringify(req.body, null, 2));
 
     const body = req.body;
 
     if (body.object === "whatsapp_business_account") {
-      const entry = body.entry?.[0];
-      const changes = entry?.changes?.[0];
-      const value = changes?.value;
-      const messages = value?.messages;
+      const entry = body.entry && body.entry[0];
+      const changes = entry && entry.changes && entry.changes[0];
+      const value = changes && changes.value;
+      const messages = value && value.messages;
+      const contactsMeta = value && value.contacts;
 
       if (messages && messages.length > 0) {
         const msg = messages[0];
-        const fromWaId = msg.from;
-        let incomingText = "";
+        const contactMeta = contactsMeta && contactsMeta[0];
 
+        const fromWaId = msg.from;
+        const name =
+          contactMeta &&
+          contactMeta.profile &&
+          contactMeta.profile.name
+            ? contactMeta.profile.name
+            : fromWaId;
+
+        const ts = parseInt(msg.timestamp, 10) * 1000;
+        const timestamp = new Date(ts).toISOString();
+
+        let text = "";
         if (msg.type === "text") {
-          incomingText = msg.text?.body || "";
+          text = (msg.text && msg.text.body) || "";
         } else {
-          incomingText = `[رسالة نوع ${msg.type}]`;
+          text = "[رسالة نوع " + msg.type + "]";
         }
 
-        console.log("📩 رسالة من:", fromWaId, "النص:", incomingText);
+        console.log("📩 رسالة من:", fromWaId, "النص:", text);
 
+        // حفظ/تحديث جهة الاتصال
+        const contact = await upsertContact(fromWaId, name);
+
+        // حفظ الرسالة الواردة
+        await insertMessage(
+          contact.id,
+          false,
+          text,
+          msg.type || "text",
+          timestamp
+        );
+
+        const clean = (text || "").trim();
+        const lower = clean.toLowerCase();
+
+        // تشغيل البوت من جديد
+        if (
+          clean.indexOf("تشغيل البوت") !== -1 ||
+          clean.indexOf("رجع البوت") !== -1 ||
+          lower.indexOf("resume bot") !== -1 ||
+          lower.indexOf("start bot") !== -1
+        ) {
+          await setBotPausedForPhone(fromWaId, false);
+          const reply =
+            "تم إعادة تشغيل البوت 🤖✅\n" +
+            "اكتب سؤالك الآن، وسأرد عليك.";
+          await insertMessage(
+            contact.id,
+            true,
+            reply,
+            "text",
+            new Date().toISOString()
+          );
+          await sendWhatsAppMessage(fromWaId, reply);
+          return res.sendStatus(200);
+        }
+
+        // طلب خدمة العملاء
+        const needSupport =
+          clean.indexOf("خدمة العملاء") !== -1 ||
+          clean.indexOf("مو واضح") !== -1 ||
+          clean.indexOf("ما فهمت") !== -1 ||
+          clean.indexOf("وضح أكثر") !== -1 ||
+          lower.indexOf("support") !== -1 ||
+          lower.indexOf("agent") !== -1;
+
+        if (needSupport) {
+          await setBotPausedForPhone(fromWaId, true);
+          const reply =
+            "تم تحويلك إلى خدمة العملاء 👨‍💼👩‍💼\n" +
+            "سيتوقف البوت عن الرد مؤقتاً حتى يخدمك أحد موظفينا.\n" +
+            "لإعادة تشغيل البوت لاحقاً، اكتب: تشغيل البوت";
+          await insertMessage(
+            contact.id,
+            true,
+            reply,
+            "text",
+            new Date().toISOString()
+          );
+          await sendWhatsAppMessage(fromWaId, reply);
+          return res.sendStatus(200);
+        }
+
+        // لو البوت موقّف
+        const freshContact = await getContactByWaId(fromWaId);
+        if (freshContact && freshContact.bot_paused) {
+          const reply =
+            "أنت حالياً مع خدمة العملاء 👨‍💼👩‍💼\n" +
+            "لن يقوم البوت بالرد حتى ينتهي تواصلك مع الموظف.\n" +
+            "لإعادة تشغيل البوت اكتب: تشغيل البوت";
+          await insertMessage(
+            contact.id,
+            true,
+            reply,
+            "text",
+            new Date().toISOString()
+          );
+          await sendWhatsAppMessage(fromWaId, reply);
+          return res.sendStatus(200);
+        }
+
+        // رد افتراضي بسيط
         const replyText =
           "هلا 👋\n" +
-          "وصلتني رسالتك عبر Meta:\n" +
-          incomingText +
+          "وصلتني رسالتك:\n" +
+          clean +
           "\n\n" +
-          "هذا رد تجريبي من Smart Bot.";
+          "هذا رد تلقائي من Smart Bot (Meta).\n" +
+          "اكتب: خدمة العملاء للتحويل لموظف.";
 
+        await insertMessage(
+          contact.id,
+          true,
+          replyText,
+          "text",
+          new Date().toISOString()
+        );
         await sendWhatsAppMessage(fromWaId, replyText);
       }
     }
@@ -107,12 +206,134 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-// صفحة فحص بسيطة
-app.get("/", (req, res) => {
-  res.sendFile(new URL("./index.html", import.meta.url).pathname);
+// =============================
+// Settings APIs
+// =============================
+app.get("/api/settings", async (req, res) => {
+  try {
+    const bot_name = await getSetting("bot_name");
+    const bot_avatar = await getSetting("bot_avatar");
+    res.json({ bot_name, bot_avatar });
+  } catch (err) {
+    console.error("❌ /api/settings error:", err);
+    res.status(500).json({ error: "internal_error" });
+  }
 });
 
+app.post("/api/settings", async (req, res) => {
+  try {
+    const body = req.body;
+    const bot_name = body.bot_name;
+    const bot_avatar = body.bot_avatar;
+    const owner_password = body.owner_password;
+
+    if (owner_password !== OWNER_PASSWORD) {
+      return res.status(403).json({ error: "forbidden" });
+    }
+
+    if (bot_name) {
+      await setSetting("bot_name", bot_name);
+    }
+    if (bot_avatar) {
+      await setSetting("bot_avatar", bot_avatar);
+    }
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error("❌ /api/settings POST error:", err);
+    res.status(500).json({ error: "internal_error" });
+  }
+});
+
+// =============================
+// Contacts APIs
+// =============================
+app.get("/api/contacts", async (req, res) => {
+  try {
+    const contacts = await getContacts();
+    res.json(contacts);
+  } catch (err) {
+    console.error("❌ /api/contacts error:", err);
+    res.status(500).json({ error: "internal_error" });
+  }
+});
+
+app.get("/api/contacts/:id/messages", async (req, res) => {
+  try {
+    const contactId = parseInt(req.params.id, 10);
+    const rows = await getMessagesByContact(contactId);
+    res.json(rows);
+  } catch (err) {
+    console.error("❌ /api/contacts/:id/messages error:", err);
+    res.status(500).json({ error: "internal_error" });
+  }
+});
+
+// إرسال رسالة من اللوحة
+app.post("/api/contacts/:id/send", async (req, res) => {
+  try {
+    const contactId = parseInt(req.params.id, 10);
+    const body = req.body.body;
+
+    db.get("SELECT * FROM contacts WHERE id = ?", [contactId], async (err, c) => {
+      if (err || !c) {
+        return res.status(404).json({ error: "contact_not_found" });
+      }
+
+      await sendWhatsAppMessage(c.wa_id, body);
+      await insertMessage(
+        contactId,
+        true,
+        body,
+        "text",
+        new Date().toISOString()
+      );
+
+      res.json({ success: true });
+    });
+  } catch (err) {
+    console.error("❌ /api/contacts/:id/send error:", err);
+    res.status(500).json({ error: "internal_error" });
+  }
+});
+
+// إيقاف / تشغيل البوت من اللوحة
+app.post("/api/contacts/:id/bot-toggle", async (req, res) => {
+  try {
+    const contactId = parseInt(req.params.id, 10);
+    const paused = !!req.body.paused;
+
+    await setBotPausedForContactId(contactId, paused);
+    res.json({ success: true });
+  } catch (err) {
+    console.error("❌ /api/contacts/:id/bot-toggle error:", err);
+    res.status(500).json({ error: "internal_error" });
+  }
+});
+
+// حذف محادثة كاملة
+app.delete("/api/contacts/:id", async (req, res) => {
+  try {
+    const contactId = parseInt(req.params.id, 10);
+    await deleteContact(contactId);
+    res.json({ success: true });
+  } catch (err) {
+    console.error("❌ /api/contacts/:id delete error:", err);
+    res.status(500).json({ error: "internal_error" });
+  }
+});
+
+// =============================
+// واجهة الويب (تشبه واتساب بسيط)
+// =============================
+app.get("*", (req, res) => {
+  res.sendFile(path.join(__dirname, "index.html"));
+});
+
+// =============================
+// تشغيل السيرفر
+// =============================
 app.listen(PORT, () => {
-  console.log("🚀 Smart Bot Meta minimal running on port " + PORT);
-  console.log("📡 Webhook على /webhook جاهز.");
+  console.log("🚀 Smart Bot Meta panel running on port " + PORT);
+  console.log("📡 جاهز لاستقبال Webhook على /webhook");
 });
