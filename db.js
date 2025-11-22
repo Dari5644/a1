@@ -11,12 +11,9 @@ const dbPath = path.join(__dirname, "smartbot.db");
 sqlite3.verbose();
 export const db = new sqlite3.Database(dbPath);
 
-// =============================
-// Initialize DB
-// =============================
+// تهيئة قاعدة البيانات
 export function initDb() {
   db.serialize(() => {
-    // جدول الإعدادات
     db.run(
       "CREATE TABLE IF NOT EXISTS settings (" +
         "key TEXT PRIMARY KEY," +
@@ -24,7 +21,6 @@ export function initDb() {
       ");"
     );
 
-    // جدول جهات الاتصال
     db.run(
       "CREATE TABLE IF NOT EXISTS contacts (" +
         "id INTEGER PRIMARY KEY AUTOINCREMENT," +
@@ -35,7 +31,6 @@ export function initDb() {
       ");"
     );
 
-    // جدول الرسائل
     db.run(
       "CREATE TABLE IF NOT EXISTS messages (" +
         "id INTEGER PRIMARY KEY AUTOINCREMENT," +
@@ -48,19 +43,16 @@ export function initDb() {
       ");"
     );
 
-    // قيم افتراضية
     db.run(
       "INSERT OR IGNORE INTO settings(key, value) VALUES('bot_name', 'Smart Bot');"
     );
     db.run(
-      "INSERT OR IGNORE INTO settings(key, value) VALUES('bot_avatar', 'https://ui-avatars.com/api/?name=Smart+Bot&background=0D8ABC&color=fff');"
+      "INSERT OR IGNORE INTO settings(key, value) VALUES('bot_avatar', 'https://ui-avatars.com/api/?name=Smart+Bot&background=128C7E&color=ffffff');"
     );
   });
 }
 
-// =============================
-// Settings
-// =============================
+// الإعدادات
 export function getSetting(key) {
   return new Promise((resolve, reject) => {
     db.get("SELECT value FROM settings WHERE key = ?", [key], (err, row) => {
@@ -84,9 +76,7 @@ export function setSetting(key, value) {
   });
 }
 
-// =============================
-// Contacts
-// =============================
+// جهات الاتصال
 export function upsertContact(wa_id, display_name) {
   return new Promise((resolve, reject) => {
     db.run(
@@ -134,9 +124,6 @@ export function getContacts() {
   });
 }
 
-// =============================
-// Messages
-// =============================
 export function getMessagesByContact(contactId) {
   return new Promise((resolve, reject) => {
     db.all(
@@ -164,9 +151,6 @@ export function insertMessage(contactId, fromMe, body, type, timestamp) {
   });
 }
 
-// =============================
-// Bot Pause
-// =============================
 export function setBotPausedForContactId(contactId, paused) {
   return new Promise((resolve, reject) => {
     db.run(
@@ -193,9 +177,6 @@ export function setBotPausedForPhone(wa_id, paused) {
   });
 }
 
-// =============================
-// Delete Contact
-// =============================
 export function deleteContact(contactId) {
   return new Promise((resolve, reject) => {
     db.run("DELETE FROM messages WHERE contact_id = ?", [contactId], (err) => {
