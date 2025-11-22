@@ -2,7 +2,7 @@
 import axios from "axios";
 
 const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN;
-const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID; // من Meta API Setup
+const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 
 if (!META_ACCESS_TOKEN) {
   console.warn("⚠️ META_ACCESS_TOKEN غير مضبوط في المتغيرات.");

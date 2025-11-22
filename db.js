@@ -11,7 +11,6 @@ const dbPath = path.join(__dirname, "smartbot.db");
 sqlite3.verbose();
 export const db = new sqlite3.Database(dbPath);
 
-// تهيئة قاعدة البيانات
 export function initDb() {
   db.serialize(() => {
     db.run(
@@ -52,7 +51,6 @@ export function initDb() {
   });
 }
 
-// الإعدادات
 export function getSetting(key) {
   return new Promise((resolve, reject) => {
     db.get("SELECT value FROM settings WHERE key = ?", [key], (err, row) => {
@@ -76,7 +74,6 @@ export function setSetting(key, value) {
   });
 }
 
-// جهات الاتصال
 export function upsertContact(wa_id, display_name) {
   return new Promise((resolve, reject) => {
     db.run(

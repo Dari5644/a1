@@ -7,7 +7,6 @@ import path from "path";
 import { fileURLToPath } from "url";
 
 import {
-  db,
   initDb,
   getSetting,
   setSetting,
@@ -38,9 +37,6 @@ app.use(express.static(__dirname));
 const PORT = process.env.PORT || 3000;
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN || FALLBACK_VERIFY_TOKEN;
 
-// =============================
-// Webhook GET (Verify)
-// =============================
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
@@ -57,9 +53,6 @@ app.get("/webhook", (req, res) => {
   return res.sendStatus(403);
 });
 
-// =============================
-// Webhook POST (Messages)
-// =============================
 app.post("/webhook", async (req, res) => {
   try {
     console.log("🔥🔥 Webhook POST من Meta 🔥🔥");
@@ -98,10 +91,8 @@ app.post("/webhook", async (req, res) => {
 
         console.log("📩 رسالة من:", fromWaId, "النص:", text);
 
-        // حفظ/تحديث جهة الاتصال
         const contact = await upsertContact(fromWaId, name);
 
-        // حفظ الرسالة الواردة
         await insertMessage(
           contact.id,
           false,
@@ -113,7 +104,6 @@ app.post("/webhook", async (req, res) => {
         const clean = (text || "").trim();
         const lower = clean.toLowerCase();
 
-        // تشغيل البوت من جديد
         if (
           clean.indexOf("تشغيل البوت") !== -1 ||
           clean.indexOf("رجع البوت") !== -1 ||
@@ -135,7 +125,6 @@ app.post("/webhook", async (req, res) => {
           return res.sendStatus(200);
         }
 
-        // طلب خدمة العملاء
         const needSupport =
           clean.indexOf("خدمة العملاء") !== -1 ||
           clean.indexOf("مو واضح") !== -1 ||
@@ -161,7 +150,6 @@ app.post("/webhook", async (req, res) => {
           return res.sendStatus(200);
         }
 
-        // لو البوت موقّف
         const freshContact = await getContactByWaId(fromWaId);
         if (freshContact && freshContact.bot_paused) {
           const reply =
@@ -179,7 +167,6 @@ app.post("/webhook", async (req, res) => {
           return res.sendStatus(200);
         }
 
-        // رد افتراضي بسيط
         const replyText =
           "هلا 👋\n" +
           "وصلتني رسالتك:\n" +
@@ -206,9 +193,6 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-// =============================
-// Settings APIs
-// =============================
 app.get("/api/settings", async (req, res) => {
   try {
     const bot_name = await getSetting("bot_name");
@@ -245,9 +229,6 @@ app.post("/api/settings", async (req, res) => {
   }
 });
 
-// =============================
-// Contacts APIs
-// =============================
 app.get("/api/contacts", async (req, res) => {
   try {
     const contacts = await getContacts();
@@ -269,13 +250,16 @@ app.get("/api/contacts/:id/messages", async (req, res) => {
   }
 });
 
-// إرسال رسالة من اللوحة
 app.post("/api/contacts/:id/send", async (req, res) => {
   try {
     const contactId = parseInt(req.params.id, 10);
     const body = req.body.body;
 
-    db.get("SELECT * FROM contacts WHERE id = ?", [contactId], async (err, c) => {
+    const sqlite3 = (await import("sqlite3")).default;
+    const dbModule = await import("./db.js");
+    const dbInstance = dbModule.db || new sqlite3.Database("smartbot.db");
+
+    dbInstance.get("SELECT * FROM contacts WHERE id = ?", [contactId], async (err, c) => {
       if (err || !c) {
         return res.status(404).json({ error: "contact_not_found" });
       }
@@ -297,7 +281,6 @@ app.post("/api/contacts/:id/send", async (req, res) => {
   }
 });
 
-// إيقاف / تشغيل البوت من اللوحة
 app.post("/api/contacts/:id/bot-toggle", async (req, res) => {
   try {
     const contactId = parseInt(req.params.id, 10);
@@ -311,7 +294,6 @@ app.post("/api/contacts/:id/bot-toggle", async (req, res) => {
   }
 });
 
-// حذف محادثة كاملة
 app.delete("/api/contacts/:id", async (req, res) => {
   try {
     const contactId = parseInt(req.params.id, 10);
@@ -323,16 +305,10 @@ app.delete("/api/contacts/:id", async (req, res) => {
   }
 });
 
-// =============================
-// واجهة الويب (تشبه واتساب بسيط)
-// =============================
-app.get("*", (req, res) => {
+app.get("/", (req, res) => {
   res.sendFile(path.join(__dirname, "index.html"));
 });
 
-// =============================
-// تشغيل السيرفر
-// =============================
 app.listen(PORT, () => {
   console.log("🚀 Smart Bot Meta panel running on port " + PORT);
   console.log("📡 جاهز لاستقبال Webhook على /webhook");
